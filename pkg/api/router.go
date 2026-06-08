@@ -26,6 +26,7 @@ func NewRouter() http.Handler {
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)
+	mux.HandleFunc("POST /track", TrackHandler)
 
 	return LoggerMiddleware(mux)
 }
