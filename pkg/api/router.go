@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 )
 
@@ -21,12 +22,19 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-func NewRouter() http.Handler {
+type RouterConfig struct {
+	EventQueue queue.EventQueue
+}
+
+func NewRouter(cfg *RouterConfig) http.Handler {
 	mux := http.NewServeMux()
+
+	// Instantiate the handler with the injected dependency
+	trackHandler := &TrackHandler{EventQueue: cfg.EventQueue}
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)
-	mux.HandleFunc("POST /track", TrackHandler)
+	mux.Handle("POST /track", trackHandler)
 
 	return LoggerMiddleware(mux)
 }

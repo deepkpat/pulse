@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,7 +13,14 @@ import (
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/api"
+	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	streamName = "pulse_stream"
+	groupName  = "pulse_worker_group" // constant across all instances
 )
 
 func main() {
@@ -24,8 +33,28 @@ func main() {
 
 	slog.Info("initializing application microservice", slog.String("env", env))
 
+	// generate a unique consumer name (hostname + random hex string)
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+	}
+
+	randomBytes := make([]byte, 4)
+	if _, err := rand.Read(randomBytes); err != nil {
+		slog.Error("failed to generate random bytes for consumer name", "error", err)
+		os.Exit(1)
+	}
+	consumerName := fmt.Sprintf("%s-%x", hostname, randomBytes)
+
+	// infrastructure setup
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	eventQueue := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
+
 	// initialize router & server specifications
-	router := api.NewRouter()
+	router := api.NewRouter(&api.RouterConfig{
+		EventQueue: eventQueue,
+	})
+
 	server := &http.Server{
 		Addr:         ":8000",
 		Handler:      router,

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
 )
@@ -19,7 +20,11 @@ var PIIBlacklist = map[string]bool{
 	"token":       true,
 }
 
-func TrackHandler(w http.ResponseWriter, r *http.Request) {
+type TrackHandler struct {
+	EventQueue queue.EventQueue // dependency injected
+}
+
+func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := telemetry.FromContext(r.Context())
 
 	// decode the untrusted raw client payload
@@ -49,7 +54,12 @@ func TrackHandler(w http.ResponseWriter, r *http.Request) {
 		Properties: sanitizedProperties,
 	}
 
-	// TODO: push the event into redis streams
+	// push the event in the queue
+	if err := h.EventQueue.Enqueue(r.Context(), event); err != nil {
+		logger.Error("failed to enqueue event", "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 	logger.Debug("event processed successfully", "event_name", event.EventName)
 
 	// return 202 Accepted for fast async pipeline execution
