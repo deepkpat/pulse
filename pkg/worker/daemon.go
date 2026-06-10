@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -9,19 +11,22 @@ import (
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/types"
+	"github.com/google/uuid"
 )
 
 type Daemon struct {
 	reader  queue.EventQueueReader
 	dedup   *cache.Deduplicator
 	storage storage.EventStorage
+	dlq     queue.DLQWriter
 }
 
-func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator, s storage.EventStorage) *Daemon {
+func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator, s storage.EventStorage, dlq queue.DLQWriter) *Daemon {
 	return &Daemon{
 		reader:  r,
 		dedup:   d,
 		storage: s,
+		dlq:     dlq,
 	}
 }
 
@@ -48,14 +53,22 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 				continue
 			}
 
-			// idempotency check
 			validEvents := make([]types.Event, 0, len(events))
 			for _, ev := range events {
+				// data type / schema validation (UUID verification)
+				if _, err := uuid.Parse(ev.EventID); err != nil {
+					slog.Warn("malformed event_id intercepted; diverting to DLQ", "event_id", ev.EventID, "error", err)
+					marshaled, _ := json.Marshal(ev)
+					_ = d.dlq.WriteToDLQ(ctx, fmt.Sprintf("invalid UUID format: %v", err), string(marshaled))
+					continue
+					// safely skip adding to validEvents.
+					// Commit() will clear it out of redis.
+				}
+
+				// idempotency check
 				isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID)
 				if err != nil {
 					slog.Error("redis dedup check failed", "error", err, "event_id", ev.EventID)
-					// fail-safe: if redis fails, we append it anyway.
-					// better to have a rare duplicate than lose user data.
 					validEvents = append(validEvents, ev)
 					continue
 				}
@@ -68,7 +81,7 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 				validEvents = append(validEvents, ev)
 			}
 
-			// TODO: write to database (placeholder)
+			// write to database
 			if len(validEvents) > 0 {
 				err := d.storage.BulkInsert(ctx, validEvents)
 				if err != nil {

@@ -19,3 +19,8 @@ type EventQueueReader interface {
 	// Commit acknowledges the successful processing of the previously fetched batch.
 	Commit(ctx context.Context)
 }
+
+// DLQWriter defines the behavior for routing corrupt or unparseable messages out of the primary pipeline.
+type DLQWriter interface {
+	WriteToDLQ(ctx context.Context, reason string, payload string) error
+}

@@ -70,10 +70,23 @@ func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Eve
 
 	for _, stream := range streams {
 		for _, msg := range stream.Messages {
-			var event types.Event
-			if err := json.Unmarshal([]byte(msg.Values["data"].(string)), &event); err != nil {
-				continue // in production, consider sending to a dead letter queue
+			rawData, ok := msg.Values["data"].(string)
+			if !ok {
+				// the payload doesn't even contain a string data field
+				_ = r.WriteToDLQ(ctx, "malformed stream item: missing data field", fmt.Sprintf("%v", msg.Values))
+				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
+				continue
 			}
+
+			var event types.Event
+			if err := json.Unmarshal([]byte(rawData), &event); err != nil {
+				// poison pill protection:
+				// route directly to DLQ and mark for ACK so it doesn't stall the stream
+				_ = r.WriteToDLQ(ctx, fmt.Sprintf("json unmarshal error: %v", err), rawData)
+				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
+				continue
+			}
+
 			events = append(events, event)
 			r.lastReadIDs = append(r.lastReadIDs, msg.ID)
 		}
@@ -88,4 +101,16 @@ func (r *RedisQueue) Commit(ctx context.Context) {
 		r.client.XAck(ctx, r.streamName, r.groupName, r.lastReadIDs...)
 		r.lastReadIDs = []string{}
 	}
+}
+
+// WriteToDLQ pushes toxic payloads to a secondary stream
+func (r *RedisQueue) WriteToDLQ(ctx context.Context, reason string, payload string) error {
+	return r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: r.streamName + "_dlq",
+		Values: map[string]interface{}{
+			"reason":    reason,
+			"payload":   payload,
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		},
+	}).Err()
 }

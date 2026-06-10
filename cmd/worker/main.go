@@ -44,7 +44,7 @@ func main() {
 	// ensure the consumer group exists (ignoring the error if it already does)
 	_ = rdb.XGroupCreateMkStream(context.Background(), streamName, groupName, "0").Err()
 
-	eventReader := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
+	redisQueue := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
 	dedupCache := cache.NewDeduplicator(rdb)
 
 	// initialize clickhouse storage
@@ -60,7 +60,7 @@ func main() {
 	}
 
 	// initialize the daemon
-	daemon := worker.NewDaemon(eventReader, dedupCache, chStorage)
+	daemon := worker.NewDaemon(redisQueue, dedupCache, chStorage, redisQueue)
 
 	// setup graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())
