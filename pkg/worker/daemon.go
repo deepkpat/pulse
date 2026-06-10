@@ -7,19 +7,21 @@ import (
 
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/queue"
+	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/types"
 )
 
 type Daemon struct {
-	reader queue.EventQueueReader
-	dedup  *cache.Deduplicator
-	// TODO: inject storage interface here
+	reader  queue.EventQueueReader
+	dedup   *cache.Deduplicator
+	storage storage.EventStorage
 }
 
-func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator) *Daemon {
+func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator, s storage.EventStorage) *Daemon {
 	return &Daemon{
-		reader: r,
-		dedup:  d,
+		reader:  r,
+		dedup:   d,
+		storage: s,
 	}
 }
 
@@ -68,7 +70,12 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 
 			// TODO: write to database (placeholder)
 			if len(validEvents) > 0 {
-				slog.Info("processed batch", "valid_events", len(validEvents), "dropped", len(events)-len(validEvents))
+				err := d.storage.BulkInsert(ctx, validEvents)
+				if err != nil {
+					slog.Error("worker context canceled during database backoff loop", "error", err)
+					continue // if the context was canceled, loop and let case <-ctx.Done() catch it
+				}
+				slog.Info("processed batch successfully", "valid_events", len(validEvents), "dropped", len(events)-len(validEvents))
 			}
 
 			// acknowledge the batch in Redis

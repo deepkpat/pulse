@@ -12,6 +12,7 @@ import (
 
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/queue"
+	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/worker"
 	"github.com/redis/go-redis/v9"
@@ -46,8 +47,20 @@ func main() {
 	eventReader := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
 	dedupCache := cache.NewDeduplicator(rdb)
 
+	// initialize clickhouse storage
+	chStorage, err := storage.NewClickHouseStorage(
+		"localhost:9000",
+		"pulse_admin",
+		"pulse_super_secret_password",
+		"pulse",
+	)
+	if err != nil {
+		slog.Error("failed to connect to clickhouse storage pool", "error", err)
+		os.Exit(1)
+	}
+
 	// initialize the daemon
-	daemon := worker.NewDaemon(eventReader, dedupCache)
+	daemon := worker.NewDaemon(eventReader, dedupCache, chStorage)
 
 	// setup graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())
