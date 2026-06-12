@@ -13,25 +13,21 @@ import (
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/api"
+	"github.com/deepkpat/pulse/pkg/config"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	streamName = "pulse_stream"
-	groupName  = "pulse_worker_group" // constant across all instances
-)
-
 func main() {
-	// setup environment
-	env := os.Getenv("PULSE_ENV")
-	if env == "" {
-		env = "development"
+	// load configuration
+	cfg := DefaultConfig()
+	if err := config.Load("pulse.yaml", cfg); err != nil {
+		slog.Warn("failed to load pulse.yaml, using defaults", "error", err)
 	}
-	telemetry.InitLogger(env)
 
-	slog.Info("initializing application microservice", slog.String("env", env))
+	telemetry.InitLogger(cfg.Env)
+	slog.Info("initializing application microservice", slog.String("env", cfg.Env))
 
 	// generate a unique consumer name (hostname + random hex string)
 	hostname, err := os.Hostname()
@@ -47,8 +43,8 @@ func main() {
 	consumerName := fmt.Sprintf("%s-%x", hostname, randomBytes)
 
 	// infrastructure setup
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	eventQueue := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+	eventQueue := queue.NewRedisQueue(rdb, cfg.Redis.StreamName, cfg.Redis.GroupName, consumerName)
 
 	// initialize router & server specifications
 	router := api.NewRouter(&api.RouterConfig{
@@ -56,11 +52,11 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:         ":8000",
+		Addr:         cfg.Server.Addr,
 		Handler:      router,
-		ReadTimeout:  4 * time.Second,
-		WriteTimeout: 8 * time.Second,
-		IdleTimeout:  128 * time.Second,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
 	// coordinate OS notification signals for closing down cleanly

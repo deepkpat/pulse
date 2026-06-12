@@ -1,0 +1,10 @@
+env: development
+redis:
+    addr: localhost:6379
+    stream_name: pulse_stream
+    group_name: pulse_worker_group
+server:
+    addr: ":8000"
+    read_timeout: 4s
+    write_timeout: 8s
+    idle_timeout: 128s
