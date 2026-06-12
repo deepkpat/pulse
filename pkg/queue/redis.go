@@ -10,21 +10,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisQueue implements both EventQueue and EventQueueReader interfaces
-// using Redis Streams. It utilizes consumer groups to allow multiple
-// workers to distribute the processing load concurrently.
+type targetID string
+
+// RedisQueue implements EventQueue and EventQueueReader using Redis Streams and consumer groups.
 type RedisQueue struct {
 	client       *redis.Client
 	streamName   string
 	groupName    string
 	consumerName string
-	// internal state to track IDs for the Commit() method
-	lastReadIDs []string
+	lastReadIDs  []string // tracks unacknowledged message IDs for Commit()
 }
 
-// NewRedisQueue initializes the queue.
-// groupName should be constant across workers.
-// consumerName should be unique (e.g., hostname + random ID).
+// NewRedisQueue initializes a new RedisQueue instance.
 func NewRedisQueue(client *redis.Client, streamName, groupName, consumerName string) *RedisQueue {
 	return &RedisQueue{
 		client:       client,
@@ -34,7 +31,7 @@ func NewRedisQueue(client *redis.Client, streamName, groupName, consumerName str
 	}
 }
 
-// Enqueue appends an event to the stream using XADD.
+// Enqueue marshals the event and appends it to the Redis stream using XADD.
 func (r *RedisQueue) Enqueue(ctx context.Context, event types.Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -47,32 +44,46 @@ func (r *RedisQueue) Enqueue(ctx context.Context, event types.Event) error {
 	}).Err()
 }
 
-// Dequeue retrieves events using XREADGROUP.
+// Dequeue fetches messages from the stream. It prioritizes recovering uncommitted
+// messages ("0") from previous runs before fetching brand-new messages (">").
 func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Event, error) {
-	// ">" means read new messages not yet delivered to others
+	r.lastReadIDs = []string{}
+
+	// check for pending, uncommitted messages assigned to this consumer
+	events, err := r.fetchFromStream(ctx, "0", batchSize, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		return events, nil
+	}
+
+	// fall back to pulling new messages if no pending work exists
+	return r.fetchFromStream(ctx, ">", batchSize, 2*time.Second)
+}
+
+// fetchFromStream is a helper executing XREADGROUP and handling payload decoding/DLQ routing.
+func (r *RedisQueue) fetchFromStream(ctx context.Context, id targetID, batchSize uint64, blockTime time.Duration) ([]types.Event, error) {
 	streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    r.groupName,
 		Consumer: r.consumerName,
-		Streams:  []string{r.streamName, ">"},
+		Streams:  []string{r.streamName, string(id)},
 		Count:    int64(batchSize),
-		Block:    2 * time.Second, // block briefly to wait for events
+		Block:    blockTime,
 	}).Result()
 
 	if err == redis.Nil {
-		return nil, nil // no new messages
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	var events []types.Event
-	r.lastReadIDs = []string{}
-
 	for _, stream := range streams {
 		for _, msg := range stream.Messages {
 			rawData, ok := msg.Values["data"].(string)
 			if !ok {
-				// the payload doesn't even contain a string data field
 				_ = r.WriteToDLQ(ctx, "malformed stream item: missing data field", fmt.Sprintf("%v", msg.Values))
 				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
 				continue
@@ -80,8 +91,6 @@ func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Eve
 
 			var event types.Event
 			if err := json.Unmarshal([]byte(rawData), &event); err != nil {
-				// poison pill protection:
-				// route directly to DLQ and mark for ACK so it doesn't stall the stream
 				_ = r.WriteToDLQ(ctx, fmt.Sprintf("json unmarshal error: %v", err), rawData)
 				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
 				continue
@@ -95,7 +104,7 @@ func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Eve
 	return events, nil
 }
 
-// Commit acknowledges the successful processing of the batch.
+// Commit acknowledges the current batch of messages using XACK.
 func (r *RedisQueue) Commit(ctx context.Context) {
 	if len(r.lastReadIDs) > 0 {
 		r.client.XAck(ctx, r.streamName, r.groupName, r.lastReadIDs...)
@@ -103,7 +112,7 @@ func (r *RedisQueue) Commit(ctx context.Context) {
 	}
 }
 
-// WriteToDLQ pushes toxic payloads to a secondary stream
+// WriteToDLQ writes toxic, unparseable payloads to a secondary stream suffixed with "_dlq".
 func (r *RedisQueue) WriteToDLQ(ctx context.Context, reason string, payload string) error {
 	return r.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: r.streamName + "_dlq",
