@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -30,21 +31,33 @@ func main() {
 	}
 	telemetry.InitLogger(env)
 
-	slog.Info("initializing worker daemon microservice", slog.String("env", env))
+	// WORKER_CONCURRENCY controls how many parallel polling goroutines run within
+	// this single process. each goroutine owns a dedicated RedisQueue instance with
+	// a unique consumerName so that redis can track the PEL independently per
+	// consumer — identical to running that many separate processes.
+	concurrency := 1
+	if v := os.Getenv("WORKER_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			slog.Error("invalid WORKER_CONCURRENCY value; must be a positive integer", "value", v)
+			os.Exit(1)
+		}
+		concurrency = n
+	}
 
-	// generate a unique consumer name
+	slog.Info("initializing worker daemon microservice",
+		slog.String("env", env),
+		slog.Int("concurrency", concurrency),
+	)
+
 	hostname, _ := os.Hostname()
-	randomBytes := make([]byte, 4)
-	rand.Read(randomBytes)
-	consumerName := fmt.Sprintf("%s-worker-%x", hostname, randomBytes)
 
-	// infrastructure setup
+	// infrastructure setup (shared across all goroutines — both are thread-safe)
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 
 	// ensure the consumer group exists (ignoring the error if it already does)
 	_ = rdb.XGroupCreateMkStream(context.Background(), streamName, groupName, "0").Err()
 
-	redisQueue := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
 	dedupCache := cache.NewDeduplicator(rdb)
 
 	// initialize clickhouse storage
@@ -59,27 +72,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	// initialize the daemon
-	daemon := worker.NewDaemon(redisQueue, dedupCache, chStorage, redisQueue)
-
 	// setup graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 
-	// start the worker loop in a goroutine
-	wg.Add(1)
-	go daemon.Start(ctx, &wg)
+	// spin up one goroutine per concurrency slot; each gets its own RedisQueue so
+	// that lastReadIDs and the Redis PEL are never shared or corrupted.
+	for i := range concurrency {
+		randomBytes := make([]byte, 4)
+		rand.Read(randomBytes)
+		consumerName := fmt.Sprintf("%s-worker-%x-%d", hostname, randomBytes, i)
+
+		redisQueue := queue.NewRedisQueue(rdb, streamName, groupName, consumerName)
+		daemon := worker.NewDaemon(redisQueue, dedupCache, chStorage, redisQueue)
+
+		wg.Add(1)
+		go daemon.Start(ctx, &wg)
+	}
 
 	// listen for OS interrupt signals
 	shutdownSignal := make(chan os.Signal, 1)
 	signal.Notify(shutdownSignal, os.Interrupt, syscall.SIGTERM)
 
 	<-shutdownSignal
-	slog.Info("shutdown signal received, instructing worker to finish current batch...")
+	slog.Info("shutdown signal received, instructing workers to finish current batch...",
+		slog.Int("concurrency", concurrency),
+	)
 
-	// cancel the context to stop the polling loop, then wait for the current batch to finish
+	// cancel the context; all goroutines will drain their current batch and exit
 	cancel()
 	wg.Wait()
 
-	slog.Info("worker exited cleanly")
+	slog.Info("all workers exited cleanly")
 }
