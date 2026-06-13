@@ -68,15 +68,13 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // sanitizeProperties scrubs blacklisted keys to protect user privacy
 func sanitizeProperties(props map[string]string) map[string]string {
-	if props == nil {
-		return make(map[string]string)
-	}
-
-	for k := range props {
-		normalizedKey := strings.ToLower(k)
-		if PIIBlacklist[normalizedKey] {
-			props[k] = "[REDACTED]"
+	out := make(map[string]string, len(props))
+	for k, v := range props {
+		if PIIBlacklist[strings.ToLower(k)] {
+			out[k] = "[REDACTED]"
+		} else {
+			out[k] = v
 		}
 	}
-	return props
+	return out
 }
