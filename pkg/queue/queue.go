@@ -17,7 +17,7 @@ type EventQueueReader interface {
 	// Dequeue retrieves up to batchSize events from the front of the queue.
 	Dequeue(ctx context.Context, batchSize uint64) ([]types.Event, error)
 	// Commit acknowledges the successful processing of the previously fetched batch.
-	Commit(ctx context.Context)
+	Commit(ctx context.Context) error
 }
 
 // DLQWriter defines the behavior for routing corrupt or unparseable messages out of the primary pipeline.

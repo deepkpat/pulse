@@ -59,7 +59,14 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 				"batch_size", len(events),
 			)
 
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+
 			backoff *= 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff

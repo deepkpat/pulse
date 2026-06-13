@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/types"
@@ -84,14 +85,19 @@ func (r *RedisQueue) fetchFromStream(ctx context.Context, id targetID, batchSize
 		for _, msg := range stream.Messages {
 			rawData, ok := msg.Values["data"].(string)
 			if !ok {
-				_ = r.WriteToDLQ(ctx, "malformed stream item: missing data field", fmt.Sprintf("%v", msg.Values))
+				payload := fmt.Sprintf("%v", msg.Values)
+				if err := r.WriteToDLQ(ctx, "malformed stream item: missing data field", payload); err != nil {
+					slog.Error("failed to write to DLQ — message lost", "error", err, "payload", payload)
+				}
 				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
 				continue
 			}
 
 			var event types.Event
 			if err := json.Unmarshal([]byte(rawData), &event); err != nil {
-				_ = r.WriteToDLQ(ctx, fmt.Sprintf("json unmarshal error: %v", err), rawData)
+				if dlqErr := r.WriteToDLQ(ctx, fmt.Sprintf("json unmarshal error: %v", err), rawData); dlqErr != nil {
+					slog.Error("failed to write to DLQ — message lost", "error", dlqErr, "payload", rawData)
+				}
 				r.lastReadIDs = append(r.lastReadIDs, msg.ID)
 				continue
 			}
@@ -105,11 +111,16 @@ func (r *RedisQueue) fetchFromStream(ctx context.Context, id targetID, batchSize
 }
 
 // Commit acknowledges the current batch of messages using XACK.
-func (r *RedisQueue) Commit(ctx context.Context) {
+// Returns an error if the acknowledgement fails; messages will be redelivered by Redis.
+func (r *RedisQueue) Commit(ctx context.Context) error {
 	if len(r.lastReadIDs) > 0 {
-		r.client.XAck(ctx, r.streamName, r.groupName, r.lastReadIDs...)
+		if err := r.client.XAck(ctx, r.streamName, r.groupName, r.lastReadIDs...).Err(); err != nil {
+			slog.Error("XAck failed — batch will be redelivered", "error", err, "ids", r.lastReadIDs)
+			return err
+		}
 		r.lastReadIDs = []string{}
 	}
+	return nil
 }
 
 // WriteToDLQ writes toxic, unparseable payloads to a secondary stream suffixed with "_dlq".

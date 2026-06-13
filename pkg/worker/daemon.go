@@ -59,23 +59,12 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 				if _, err := uuid.Parse(ev.EventID); err != nil {
 					slog.Warn("malformed event_id intercepted; diverting to DLQ", "event_id", ev.EventID, "error", err)
 					marshaled, _ := json.Marshal(ev)
-					_ = d.dlq.WriteToDLQ(ctx, fmt.Sprintf("invalid UUID format: %v", err), string(marshaled))
+					if dlqErr := d.dlq.WriteToDLQ(ctx, fmt.Sprintf("invalid UUID format: %v", err), string(marshaled)); dlqErr != nil {
+						slog.Error("failed to write to DLQ — message lost", "error", dlqErr, "event_id", ev.EventID)
+					}
 					continue
 					// safely skip adding to validEvents.
 					// Commit() will clear it out of redis.
-				}
-
-				// idempotency check
-				isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID)
-				if err != nil {
-					slog.Error("redis dedup check failed", "error", err, "event_id", ev.EventID)
-					validEvents = append(validEvents, ev)
-					continue
-				}
-
-				if isDup {
-					slog.Debug("dropped duplicate event", "event_id", ev.EventID)
-					continue
 				}
 
 				validEvents = append(validEvents, ev)
@@ -88,11 +77,26 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 					slog.Error("worker context canceled during database backoff loop", "error", err)
 					continue // if the context was canceled, loop and let case <-ctx.Done() catch it
 				}
+
+				// dedup is marked AFTER successful storage write to prevent event loss on retry
+				// if CheckAndSet fails, we conservatively include the event (already written)
+				for _, ev := range validEvents {
+					if isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID); err != nil {
+						slog.Error("redis dedup mark failed post-write", "error", err, "event_id", ev.EventID)
+					} else if isDup {
+						// this should not normally happen since we haven't marked before write,
+						// but handle it defensively.
+						slog.Warn("duplicate event detected post-write (race condition?)", "event_id", ev.EventID)
+					}
+				}
+
 				slog.Info("processed batch successfully", "valid_events", len(validEvents), "dropped", len(events)-len(validEvents))
 			}
 
-			// acknowledge the batch in Redis
-			d.reader.Commit(ctx)
+			// acknowledge the batch in redis
+			if err := d.reader.Commit(ctx); err != nil {
+				slog.Error("failed to commit batch in redis — batch will be redelivered", "error", err)
+			}
 		}
 	}
 }
