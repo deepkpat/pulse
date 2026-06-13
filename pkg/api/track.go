@@ -11,15 +11,6 @@ import (
 	"github.com/deepkpat/pulse/pkg/types"
 )
 
-// List of sensitive payload keys we want to scrub before ingestion
-var PIIBlacklist = map[string]bool{
-	"password":    true,
-	"credit_card": true,
-	"address":     true,
-	"secret":      true,
-	"token":       true,
-}
-
 type TrackHandler struct {
 	EventQueue queue.EventQueue // dependency injected
 }
@@ -70,7 +61,7 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func sanitizeProperties(props map[string]string) map[string]string {
 	out := make(map[string]string, len(props))
 	for k, v := range props {
-		if PIIBlacklist[strings.ToLower(k)] {
+		if PIIDenylist[strings.ToLower(k)] {
 			out[k] = "[REDACTED]"
 		} else {
 			out[k] = v
