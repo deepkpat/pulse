@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -18,9 +19,19 @@ type TrackHandler struct {
 func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := telemetry.FromContext(r.Context())
 
+	// enforce a hard cap before any decoding to prevent OOM from large payloads
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB max
+
 	// decode the untrusted raw client payload
 	var raw types.RawEvent
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		// distinguish between body-too-large and genuinely malformed JSON
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			logger.Warn("request body exceeded size limit", "limit_bytes", maxBytesErr.Limit)
+			http.Error(w, "Request body too large (max 64 KB)", http.StatusRequestEntityTooLarge)
+			return
+		}
 		logger.Warn("malformed JSON payload rejected", "error", err)
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
