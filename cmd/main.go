@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/api"
+	"github.com/deepkpat/pulse/pkg/auth"
 	"github.com/deepkpat/pulse/pkg/config"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
@@ -46,9 +47,24 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
 	eventQueue := queue.NewRedisQueue(rdb, cfg.Redis.StreamName, cfg.Redis.GroupName, consumerName)
 
+	pgStorage, err := auth.NewPostgresAuthenticator(
+		cfg.Postgres.Host,
+		cfg.Postgres.Port,
+		cfg.Postgres.User,
+		cfg.Postgres.Password,
+		cfg.Postgres.DBName,
+		cfg.Postgres.SSLMode,
+	)
+	if err != nil {
+		slog.Error("failed to initialize postgres storage", "error", err)
+		os.Exit(1)
+	}
+	defer pgStorage.Close()
+
 	// initialize router & server specifications
 	router := api.NewRouter(&api.RouterConfig{
 		EventQueue: eventQueue,
+		Auth:       pgStorage,
 	})
 
 	server := &http.Server{

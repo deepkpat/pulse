@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/deepkpat/pulse/pkg/auth"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 )
@@ -24,17 +25,21 @@ func (rw *responseWriter) WriteHeader(code int) {
 
 type RouterConfig struct {
 	EventQueue queue.EventQueue
+	Auth       auth.Authenticator
 }
 
 func NewRouter(cfg *RouterConfig) http.Handler {
 	mux := http.NewServeMux()
 
-	// Instantiate the handler with the injected dependency
+	// instantiate the handler with the injected dependency
 	trackHandler := &TrackHandler{EventQueue: cfg.EventQueue}
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)
-	mux.Handle("POST /track", trackHandler)
+
+	// protected routes
+	authMiddleware := auth.Middleware(cfg.Auth)
+	mux.Handle("POST /track", authMiddleware(trackHandler))
 
 	return LoggerMiddleware(mux)
 }

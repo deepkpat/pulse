@@ -3,6 +3,13 @@ redis:
     addr: localhost:6379
     stream_name: pulse_stream
     group_name: pulse_worker_group
+postgres:
+    host: localhost
+    port: 5432
+    user: pulse_pg
+    password: pulse_pg_super_secret_password
+    dbname: pulse
+    sslmode: disable
 server:
     addr: ":8000"
     read_timeout: 4s

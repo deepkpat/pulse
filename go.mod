@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/google/uuid v1.6.0
+	github.com/lib/pq v1.12.3
 	github.com/redis/go-redis/v9 v9.20.0
 	gopkg.in/yaml.v3 v3.0.1
 )
