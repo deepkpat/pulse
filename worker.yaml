@@ -6,6 +6,6 @@ redis:
     group_name: pulse_worker_group
 clickhouse:
     addr: localhost:9000
-    user: pulse_admin
-    password: pulse_super_secret_password
+    user: pulse_ch
+    password: pulse_ch_super_secret_password
     database: pulse
