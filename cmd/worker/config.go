@@ -1,5 +1,9 @@
 package main
 
+import (
+	"github.com/deepkpat/pulse/pkg/config"
+)
+
 type Config struct {
 	Env         string           `yaml:"env"`
 	Concurrency int              `yaml:"concurrency"`
@@ -22,18 +26,18 @@ type ClickHouseConfig struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Env:         "development",
-		Concurrency: 1,
+		Env:         config.GetEnv("PULSE_ENV", "development"),
+		Concurrency: config.GetEnvInt("PULSE_CONCURRENCY", 2),
 		Redis: RedisConfig{
-			Addr:       "localhost:6379",
-			StreamName: "pulse_stream",
-			GroupName:  "pulse_worker_group",
+			Addr:       config.GetEnv("PULSE_REDIS_ADDR", "localhost:6379"),
+			StreamName: config.GetEnv("PULSE_REDIS_STREAM_NAME", "pulse_stream"),
+			GroupName:  config.GetEnv("PULSE_REDIS_GROUP_NAME", "pulse_worker_group"),
 		},
 		ClickHouse: ClickHouseConfig{
-			Addr:     "localhost:9000",
-			User:     "pulse_admin",
-			Password: "pulse_super_secret_password",
-			Database: "pulse",
+			Addr:     config.GetEnv("PULSE_CLICKHOUSE_ADDR", "localhost:9000"),
+			User:     config.GetEnv("PULSE_CLICKHOUSE_USER", "pulse_ch"),
+			Password: config.GetEnv("PULSE_CLICKHOUSE_PASSWORD", "pulse_ch_super_secret_password"),
+			Database: config.GetEnv("PULSE_CLICKHOUSE_DATABASE", "pulse"),
 		},
 	}
 }

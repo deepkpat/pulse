@@ -2,10 +2,12 @@ package main
 
 import (
 	"time"
+
+	"github.com/deepkpat/pulse/pkg/config"
 )
 
 type Config struct {
-	Env    string      `yaml:"env"`
+	Env    string       `yaml:"env"`
 	Redis  RedisConfig  `yaml:"redis"`
 	Server ServerConfig `yaml:"server"`
 }
@@ -25,17 +27,17 @@ type ServerConfig struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Env: "development",
+		Env: config.GetEnv("PULSE_ENV", "development"),
 		Redis: RedisConfig{
-			Addr:       "localhost:6379",
-			StreamName: "pulse_stream",
-			GroupName:  "pulse_worker_group",
+			Addr:       config.GetEnv("PULSE_REDIS_ADDR", "localhost:6379"),
+			StreamName: config.GetEnv("PULSE_REDIS_STREAM_NAME", "pulse_stream"),
+			GroupName:  config.GetEnv("PULSE_REDIS_GROUP_NAME", "pulse_worker_group"),
 		},
 		Server: ServerConfig{
-			Addr:         ":8000",
-			ReadTimeout:  4 * time.Second,
-			WriteTimeout: 8 * time.Second,
-			IdleTimeout:  128 * time.Second,
+			Addr:         config.GetEnv("PULSE_SERVER_ADDR", ":8000"),
+			ReadTimeout:  config.GetEnvDuration("PULSE_SERVER_READ_TIMEOUT", 4*time.Second),
+			WriteTimeout: config.GetEnvDuration("PULSE_SERVER_WRITE_TIMEOUT", 8*time.Second),
+			IdleTimeout:  config.GetEnvDuration("PULSE_SERVER_IDLE_TIMEOUT", 128*time.Second),
 		},
 	}
 }
