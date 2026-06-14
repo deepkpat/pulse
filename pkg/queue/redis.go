@@ -11,8 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type targetID string
-
 // RedisQueue implements EventQueue and EventQueueReader using Redis Streams and consumer groups.
 type RedisQueue struct {
 	client       *redis.Client
@@ -64,7 +62,7 @@ func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Eve
 }
 
 // fetchFromStream is a helper executing XREADGROUP and handling payload decoding/DLQ routing.
-func (r *RedisQueue) fetchFromStream(ctx context.Context, id targetID, batchSize uint64, blockTime time.Duration) ([]types.Event, error) {
+func (r *RedisQueue) fetchFromStream(ctx context.Context, id string, batchSize uint64, blockTime time.Duration) ([]types.Event, error) {
 	streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    r.groupName,
 		Consumer: r.consumerName,

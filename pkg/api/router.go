@@ -105,7 +105,7 @@ func LoggerMiddleware(next http.Handler) http.Handler {
 
 		logFn("http request completed",
 			slog.Int("status", rw.statusCode),
-			slog.Duration("latency_ms", time.Since(start)),
+			slog.Int64("latency_ms", time.Since(start).Milliseconds()),
 		)
 	})
 }
