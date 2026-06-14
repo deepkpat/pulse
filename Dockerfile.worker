@@ -1,0 +1,34 @@
+# build stage
+FROM golang:1.26-alpine AS builder
+
+# install build dependencies
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# copy dependency files and download
+COPY go.mod go.sum ./
+RUN go mod download
+
+# copy source code
+COPY . .
+
+# build the worker binary
+RUN go build -o worker ./cmd/worker
+
+# final stage
+FROM alpine:latest
+
+# install runtime dependencies
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+# copy binary
+COPY --from=builder /app/worker .
+
+# metrics port
+EXPOSE 9091
+
+# run the worker
+CMD ["./worker"]

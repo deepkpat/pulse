@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/deepkpat/pulse/pkg/auth"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // responseWriter captures the HTTP status code for logging analytics
@@ -36,6 +38,7 @@ func NewRouter(cfg *RouterConfig) http.Handler {
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	// protected routes
 	authMiddleware := auth.Middleware(cfg.Auth)
@@ -46,6 +49,9 @@ func NewRouter(cfg *RouterConfig) http.Handler {
 
 func LoggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		telemetry.HTTPRequestsInFlight.Inc()
+		defer telemetry.HTTPRequestsInFlight.Dec()
+
 		start := time.Now()
 
 		// trace/correlation ID extraction
@@ -78,6 +84,13 @@ func LoggerMiddleware(next http.Handler) http.Handler {
 				)
 				http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}
+
+			// capture metrics even on panic
+			elapsed := time.Since(start).Seconds()
+			statusCode := fmt.Sprintf("%d", rw.statusCode)
+			statusClass := fmt.Sprintf("%dxx", rw.statusCode/100)
+			telemetry.HTTPRequestDuration.WithLabelValues(r.Method, r.URL.Path, statusClass).Observe(elapsed)
+			telemetry.HTTPResponsesTotal.WithLabelValues(r.Method, r.URL.Path, statusCode).Inc()
 		}()
 
 		next.ServeHTTP(rw, r)

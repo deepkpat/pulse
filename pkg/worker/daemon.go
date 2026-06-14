@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"sync"
 
+	"time"
+
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/storage"
+	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
 	"github.com/google/uuid"
 )
@@ -44,6 +47,7 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 			// tumbling window: blocks for up to 2s OR until 1024 events are ready
 			events, err := d.reader.Dequeue(ctx, 1024)
 			if err != nil {
+				telemetry.WorkerBatchesTotal.WithLabelValues("error").Inc()
 				slog.Error("failed to dequeue events", "error", err)
 				continue
 			}
@@ -53,14 +57,21 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 				continue
 			}
 
+			telemetry.WorkerBatchesTotal.WithLabelValues("ok").Inc()
+			telemetry.WorkerBatchSize.Observe(float64(len(events)))
+
 			validEvents := make([]types.Event, 0, len(events))
 			for _, ev := range events {
 				// data type / schema validation (UUID verification)
 				if _, err := uuid.Parse(ev.EventID); err != nil {
+					telemetry.WorkerEventsDropped.WithLabelValues("invalid_uuid").Inc()
 					slog.Warn("malformed event_id intercepted; diverting to DLQ", "event_id", ev.EventID, "error", err)
 					marshaled, _ := json.Marshal(ev)
 					if dlqErr := d.dlq.WriteToDLQ(ctx, fmt.Sprintf("invalid UUID format: %v", err), string(marshaled)); dlqErr != nil {
+						telemetry.DLQWritesTotal.WithLabelValues("invalid_uuid", "error").Inc()
 						slog.Error("failed to write to DLQ — message lost", "error", dlqErr, "event_id", ev.EventID)
+					} else {
+						telemetry.DLQWritesTotal.WithLabelValues("invalid_uuid", "ok").Inc()
 					}
 					continue
 					// safely skip adding to validEvents.
@@ -72,11 +83,17 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 
 			// write to database
 			if len(validEvents) > 0 {
+				insertStart := time.Now()
 				err := d.storage.BulkInsert(ctx, validEvents)
+				telemetry.StorageInsertDuration.Observe(time.Since(insertStart).Seconds())
+
 				if err != nil {
+					telemetry.StorageInsertsTotal.WithLabelValues("error").Inc()
 					slog.Error("worker context canceled during database backoff loop", "error", err)
 					continue // if the context was canceled, loop and let case <-ctx.Done() catch it
 				}
+				telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
+				telemetry.StorageEventsInserted.Add(float64(len(validEvents)))
 
 				// dedup is marked AFTER successful storage write to prevent event loss on retry
 				// if CheckAndSet fails, we conservatively include the event (already written)
@@ -84,6 +101,7 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 					if isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID); err != nil {
 						slog.Error("redis dedup mark failed post-write", "error", err, "event_id", ev.EventID)
 					} else if isDup {
+						telemetry.WorkerDuplicatesTotal.Inc()
 						// this should not normally happen since we haven't marked before write,
 						// but handle it defensively.
 						slog.Warn("duplicate event detected post-write (race condition?)", "event_id", ev.EventID)
@@ -95,6 +113,7 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 
 			// acknowledge the batch in redis
 			if err := d.reader.Commit(ctx); err != nil {
+				telemetry.CommitFailuresTotal.Inc()
 				slog.Error("failed to commit batch in redis — batch will be redelivered", "error", err)
 			}
 		}

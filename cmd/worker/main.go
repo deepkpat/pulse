@@ -5,10 +5,13 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/config"
@@ -20,18 +23,31 @@ import (
 )
 
 func main() {
-	// load configuration
+	// load configuration (precedence: env > yaml > code defaults)
 	cfg := DefaultConfig()
 	if err := config.Load("worker.yaml", cfg); err != nil {
 		slog.Warn("failed to load worker.yaml, using defaults", "error", err)
 	}
+	cfg.ApplyEnvOverrides()
 
+	// setup telemetry
 	telemetry.InitLogger(cfg.Env)
+	telemetry.RegisterMetrics()
 
 	slog.Info("initializing worker daemon microservice",
 		slog.String("env", cfg.Env),
 		slog.Int("concurrency", cfg.Concurrency),
 	)
+
+	// spin up a lightweight metrics server on a separate port.
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		slog.Info("worker metrics server listening", "addr", cfg.MetricsAddr)
+		if err := http.ListenAndServe(cfg.MetricsAddr, mux); err != nil {
+			slog.Error("worker metrics server failed", "error", err)
+		}
+	}()
 
 	hostname, _ := os.Hostname()
 

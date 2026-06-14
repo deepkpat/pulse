@@ -10,9 +10,13 @@ import (
 )
 
 // Load reads a YAML configuration file from the given path and unmarshals it into the provided dst.
+// If the file does not exist, it returns nil (no error).
 func Load(path string, dst any) error {
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to open config file %s: %w", path, err)
 	}
 	defer f.Close()

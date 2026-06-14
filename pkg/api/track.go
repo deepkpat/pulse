@@ -26,12 +26,13 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var raw types.RawEvent
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		// distinguish between body-too-large and genuinely malformed JSON
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if maxBytesErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			telemetry.PayloadRejectedTotal.WithLabelValues("too_large").Inc()
 			logger.Warn("request body exceeded size limit", "limit_bytes", maxBytesErr.Limit)
 			http.Error(w, "Request body too large (max 64 KB)", http.StatusRequestEntityTooLarge)
 			return
 		}
+		telemetry.PayloadRejectedTotal.WithLabelValues("bad_json").Inc()
 		logger.Warn("malformed JSON payload rejected", "error", err)
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
@@ -39,6 +40,7 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// basic validation rule: every event requires a name and id
 	if raw.EventID == "" || raw.EventName == "" {
+		telemetry.PayloadRejectedTotal.WithLabelValues("missing_fields").Inc()
 		logger.Warn("missing required fields in event payload", "event_id", raw.EventID, "event_name", raw.EventName)
 		http.Error(w, "Missing event_id or event_name", http.StatusUnprocessableEntity)
 		return
@@ -57,11 +59,15 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// push the event in the queue
+	enqStart := time.Now()
 	if err := h.EventQueue.Enqueue(r.Context(), event); err != nil {
+		telemetry.EnqueueTotal.WithLabelValues("error").Inc()
 		logger.Error("failed to enqueue event", "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	telemetry.EnqueueDuration.Observe(time.Since(enqStart).Seconds())
+	telemetry.EnqueueTotal.WithLabelValues("ok").Inc()
 	logger.Debug("event processed successfully", "event_name", event.EventName)
 
 	// return 202 Accepted for fast async pipeline execution

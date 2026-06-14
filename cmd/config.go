@@ -35,27 +35,52 @@ type ServerConfig struct {
 	IdleTimeout  time.Duration `yaml:"idle_timeout"`
 }
 
+// DefaultConfig returns sane hardcoded defaults for local development.
 func DefaultConfig() *Config {
 	return &Config{
-		Env: config.GetEnv("PULSE_ENV", "development"),
+		Env: "development",
 		Redis: RedisConfig{
-			Addr:       config.GetEnv("PULSE_REDIS_ADDR", "localhost:6379"),
-			StreamName: config.GetEnv("PULSE_REDIS_STREAM_NAME", "pulse_stream"),
-			GroupName:  config.GetEnv("PULSE_REDIS_GROUP_NAME", "pulse_worker_group"),
+			Addr:       "localhost:6379",
+			StreamName: "pulse_stream",
+			GroupName:  "pulse_worker_group",
 		},
 		Postgres: PostgresConfig{
-			Host:     config.GetEnv("PULSE_PG_HOST", "localhost"),
-			Port:     config.GetEnvInt("PULSE_PG_PORT", 5432),
-			User:     config.GetEnv("PULSE_PG_USER", "pulse_pg"),
-			Password: config.GetEnv("PULSE_PG_PASSWORD", "pulse_pg_super_secret_password"),
-			DBName:   config.GetEnv("PULSE_PG_DBNAME", "pulse"),
-			SSLMode:  config.GetEnv("PULSE_PG_SSLMODE", "disable"),
+			Host:     "localhost",
+			Port:     5432,
+			User:     "pulse_pg",
+			Password: "pulse_pg_super_secret_password",
+			DBName:   "pulse",
+			SSLMode:  "disable",
 		},
 		Server: ServerConfig{
-			Addr:         config.GetEnv("PULSE_SERVER_ADDR", ":8000"),
-			ReadTimeout:  config.GetEnvDuration("PULSE_SERVER_READ_TIMEOUT", 4*time.Second),
-			WriteTimeout: config.GetEnvDuration("PULSE_SERVER_WRITE_TIMEOUT", 8*time.Second),
-			IdleTimeout:  config.GetEnvDuration("PULSE_SERVER_IDLE_TIMEOUT", 128*time.Second),
+			Addr:         ":8000",
+			ReadTimeout:  4 * time.Second,
+			WriteTimeout: 8 * time.Second,
+			IdleTimeout:  128 * time.Second,
 		},
 	}
+}
+
+// ApplyEnvOverrides updates the config with environment variables.
+func (c *Config) ApplyEnvOverrides() {
+	c.Env = config.GetEnv("PULSE_ENV", c.Env)
+
+	// redis overrides
+	c.Redis.Addr = config.GetEnv("PULSE_REDIS_ADDR", c.Redis.Addr)
+	c.Redis.StreamName = config.GetEnv("PULSE_REDIS_STREAM_NAME", c.Redis.StreamName)
+	c.Redis.GroupName = config.GetEnv("PULSE_REDIS_GROUP_NAME", c.Redis.GroupName)
+
+	// postgres overrides
+	c.Postgres.Host = config.GetEnv("PULSE_PG_HOST", c.Postgres.Host)
+	c.Postgres.Port = config.GetEnvInt("PULSE_PG_PORT", c.Postgres.Port)
+	c.Postgres.User = config.GetEnv("PULSE_PG_USER", c.Postgres.User)
+	c.Postgres.Password = config.GetEnv("PULSE_PG_PASSWORD", c.Postgres.Password)
+	c.Postgres.DBName = config.GetEnv("PULSE_PG_DBNAME", c.Postgres.DBName)
+	c.Postgres.SSLMode = config.GetEnv("PULSE_PG_SSLMODE", c.Postgres.SSLMode)
+
+	// server overrides
+	c.Server.Addr = config.GetEnv("PULSE_SERVER_ADDR", c.Server.Addr)
+	c.Server.ReadTimeout = config.GetEnvDuration("PULSE_SERVER_READ_TIMEOUT", c.Server.ReadTimeout)
+	c.Server.WriteTimeout = config.GetEnvDuration("PULSE_SERVER_WRITE_TIMEOUT", c.Server.WriteTimeout)
+	c.Server.IdleTimeout = config.GetEnvDuration("PULSE_SERVER_IDLE_TIMEOUT", c.Server.IdleTimeout)
 }

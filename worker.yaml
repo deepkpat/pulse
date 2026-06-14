@@ -1,11 +1,11 @@
 env: development
 concurrency: 2
 redis:
-    addr: localhost:6379
+    addr: redis:6379
     stream_name: pulse_stream
     group_name: pulse_worker_group
 clickhouse:
-    addr: localhost:9000
+    addr: clickhouse:9000
     user: pulse_ch
     password: pulse_ch_super_secret_password
     database: pulse

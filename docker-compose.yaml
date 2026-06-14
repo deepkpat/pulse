@@ -38,6 +38,7 @@ services:
             - pulse-net
         volumes:
             - clickhouse_data:/var/lib/clickhouse
+            - ./infra/clickhouse:/docker-entrypoint-initdb.d
         ulimits:
             nofile:
                 soft: 262144
@@ -64,6 +65,7 @@ services:
             - pulse-net
         volumes:
             - postgres_data:/var/lib/postgresql/data
+            - ./infra/postgres:/docker-entrypoint-initdb.d
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U pulse_pg -d pulse"]
             interval: 8s
@@ -71,7 +73,68 @@ services:
             retries: 4
             start_period: 16s
 
+    # pulse api server
+    pulse-api:
+        build:
+            context: .
+            dockerfile: Dockerfile.api
+        container_name: pulse-api
+        restart: unless-stopped
+        environment:
+            - PULSE_ENV=production
+            - PULSE_REDIS_ADDR=redis:6379
+            - PULSE_PG_HOST=postgres
+            - PULSE_PG_USER=pulse_pg
+            - PULSE_PG_PASSWORD=pulse_pg_super_secret_password
+            - PULSE_PG_DBNAME=pulse
+        ports:
+            - "8000:8000"
+        networks:
+            - pulse-net
+        depends_on:
+            redis:
+                condition: service_healthy
+            postgres:
+                condition: service_healthy
+
+    # pulse workers
+    pulse-worker:
+        build:
+            context: .
+            dockerfile: Dockerfile.worker
+        restart: unless-stopped
+        environment:
+            - PULSE_ENV=production
+            - PULSE_CONCURRENCY=2
+            - PULSE_REDIS_ADDR=redis:6379
+            - PULSE_CLICKHOUSE_ADDR=clickhouse:9000
+            - PULSE_CLICKHOUSE_USER=pulse_ch
+            - PULSE_CLICKHOUSE_PASSWORD=pulse_ch_super_secret_password
+            - PULSE_CLICKHOUSE_DATABASE=pulse
+        networks:
+            - pulse-net
+        deploy:
+            replicas: 2
+        depends_on:
+            redis:
+                condition: service_healthy
+            clickhouse:
+                condition: service_healthy
+
+    prometheus:
+        image: prom/prometheus:v3.0.0
+        container_name: pulse-prometheus
+        restart: unless-stopped
+        ports:
+            - "9090:9090"
+        networks:
+            - pulse-net
+        volumes:
+            - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+            - prometheus_data:/prometheus
+
 volumes:
     redis_data:
     clickhouse_data:
     postgres_data:
+    prometheus_data:

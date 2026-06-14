@@ -21,13 +21,17 @@ import (
 )
 
 func main() {
-	// load configuration
+	// load configuration (Precedence: env > yaml > code defaults)
 	cfg := DefaultConfig()
 	if err := config.Load("pulse.yaml", cfg); err != nil {
 		slog.Warn("failed to load pulse.yaml, using defaults", "error", err)
 	}
+	cfg.ApplyEnvOverrides()
 
+	// setup telemetry
 	telemetry.InitLogger(cfg.Env)
+	telemetry.RegisterMetrics()
+
 	slog.Info("initializing application microservice", slog.String("env", cfg.Env))
 
 	// generate a unique consumer name (hostname + random hex string)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
 	"github.com/google/uuid"
 )
@@ -68,6 +69,7 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 			}
 
 			backoff *= 2
+			telemetry.StorageRetries.Inc()
 			if backoff > maxBackoff {
 				backoff = maxBackoff
 			}
