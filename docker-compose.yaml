@@ -97,6 +97,38 @@ services:
             postgres:
                 condition: service_healthy
 
+    # hashicorp vault
+    vault:
+        image: hashicorp/vault:2.0
+        container_name: pulse-vault
+        user: "root"
+        restart: unless-stopped
+        environment:
+            - VAULT_ADDR=http://127.0.0.1:8200
+        cap_add:
+            - IPC_LOCK
+        ports:
+            - "8200:8200"
+        networks:
+            - pulse-net
+        volumes:
+            - ./infra/vault/config:/vault/config
+            - vault_data:/vault/data
+        entrypoint: vault server -config=/vault/config/vault.hcl
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "wget",
+                    "-q",
+                    "--spider",
+                    "http://127.0.0.1:8200/v1/sys/health?standbyok=true",
+                ]
+            interval: 8s
+            timeout: 4s
+            retries: 4
+            start_period: 8s
+
     # pulse workers
     pulse-worker:
         build:
@@ -138,3 +170,4 @@ volumes:
     clickhouse_data:
     postgres_data:
     prometheus_data:
+    vault_data:
