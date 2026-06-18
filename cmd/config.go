@@ -14,9 +14,10 @@ type Config struct {
 }
 
 type RedisConfig struct {
-	Addr       string `yaml:"addr"`
-	StreamName string `yaml:"stream_name"`
-	GroupName  string `yaml:"group_name"`
+	Addr       string        `yaml:"addr"`
+	StreamName string        `yaml:"stream_name"`
+	GroupName  string        `yaml:"group_name"`
+	DedupTTL   time.Duration `yaml:"dedup_ttl"`
 }
 
 type PostgresConfig struct {
@@ -43,6 +44,7 @@ func DefaultConfig() *Config {
 			Addr:       "localhost:6379",
 			StreamName: "pulse_stream",
 			GroupName:  "pulse_worker_group",
+			DedupTTL:   16 * time.Minute,
 		},
 		Postgres: PostgresConfig{
 			Host:     "localhost",
@@ -69,6 +71,7 @@ func (c *Config) ApplyEnvOverrides() {
 	c.Redis.Addr = config.GetEnv("PULSE_REDIS_ADDR", c.Redis.Addr)
 	c.Redis.StreamName = config.GetEnv("PULSE_REDIS_STREAM_NAME", c.Redis.StreamName)
 	c.Redis.GroupName = config.GetEnv("PULSE_REDIS_GROUP_NAME", c.Redis.GroupName)
+	c.Redis.DedupTTL = config.GetEnvDuration("PULSE_REDIS_DEDUP_TTL", c.Redis.DedupTTL)
 
 	// postgres overrides
 	c.Postgres.Host = config.GetEnv("PULSE_PG_HOST", c.Postgres.Host)

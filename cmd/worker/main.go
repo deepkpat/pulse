@@ -12,14 +12,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/config"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/worker"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -58,19 +58,29 @@ func main() {
 	// ensure the consumer group exists (ignoring the error if it already does)
 	_ = rdb.XGroupCreateMkStream(context.Background(), cfg.Redis.StreamName, cfg.Redis.GroupName, "0").Err()
 
-	dedupCache := cache.NewDeduplicator(rdb)
+	dedupCache := cache.NewDeduplicator(rdb, cfg.Redis.DedupTTL, "dedup:worker")
 
-	// initialize clickhouse storage
-	chStorage, err := storage.NewClickHouseStorage(
-		cfg.ClickHouse.Addr,
-		cfg.ClickHouse.User,
-		cfg.ClickHouse.Password,
-		cfg.ClickHouse.Database,
-	)
+	// initialize clickhouse connection pool
+	chConn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{cfg.ClickHouse.Addr},
+		Auth: clickhouse.Auth{
+			Database: cfg.ClickHouse.Database,
+			Username: cfg.ClickHouse.User,
+			Password: cfg.ClickHouse.Password,
+		},
+		DialTimeout: 5 * time.Second,
+	})
 	if err != nil {
-		slog.Error("failed to connect to clickhouse storage pool", "error", err)
+		slog.Error("failed to open clickhouse connection pool", "error", err)
 		os.Exit(1)
 	}
+
+	if err := chConn.Ping(context.Background()); err != nil {
+		slog.Error("failed to ping clickhouse storage", "error", err)
+		os.Exit(1)
+	}
+
+	chStorage := storage.NewClickHouseStorage(chConn)
 
 	// setup graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())

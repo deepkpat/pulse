@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/deepkpat/pulse/pkg/api"
 	"github.com/deepkpat/pulse/pkg/auth"
+	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/config"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
@@ -50,25 +52,33 @@ func main() {
 	// infrastructure setup
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
 	eventQueue := queue.NewRedisQueue(rdb, cfg.Redis.StreamName, cfg.Redis.GroupName, consumerName)
+	dedupCache := cache.NewDeduplicator(rdb, cfg.Redis.DedupTTL, "dedup:api")
 
-	pgStorage, err := auth.NewPostgresAuthenticator(
-		cfg.Postgres.Host,
-		cfg.Postgres.Port,
-		cfg.Postgres.User,
-		cfg.Postgres.Password,
-		cfg.Postgres.DBName,
-		cfg.Postgres.SSLMode,
-	)
+	// initialize postgres connection pool
+	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Postgres.Host, cfg.Postgres.Port, cfg.Postgres.User, cfg.Postgres.Password, cfg.Postgres.DBName, cfg.Postgres.SSLMode)
+	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		slog.Error("failed to initialize postgres storage", "error", err)
+		slog.Error("failed to open postgres connection", "error", err)
 		os.Exit(1)
 	}
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(16)
+	db.SetConnMaxLifetime(4 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		slog.Error("failed to ping postgres", "error", err)
+		os.Exit(1)
+	}
+
+	pgStorage := auth.NewPostgresAuthenticator(db)
 	defer pgStorage.Close()
 
 	// initialize router & server specifications
 	router := api.NewRouter(&api.RouterConfig{
 		EventQueue: eventQueue,
 		Auth:       pgStorage,
+		Dedup:      dedupCache,
 	})
 
 	server := &http.Server{

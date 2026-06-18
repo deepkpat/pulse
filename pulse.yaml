@@ -3,6 +3,7 @@ redis:
     addr: redis:6379
     stream_name: pulse_stream
     group_name: pulse_worker_group
+    dedup_ttl: 16m
 postgres:
     host: postgres
     port: 5432

@@ -3,10 +3,10 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
-
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/cache"
@@ -22,6 +22,10 @@ type Daemon struct {
 	dedup   *cache.Deduplicator
 	storage storage.EventStorage
 	dlq     queue.DLQWriter
+
+	// State tracking for failed commits
+	pendingCommitErr error
+	lastBatchSize    int
 }
 
 func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator, s storage.EventStorage, dlq queue.DLQWriter) *Daemon {
@@ -34,103 +38,248 @@ func NewDaemon(r queue.EventQueueReader, d *cache.Deduplicator, s storage.EventS
 }
 
 // Start runs the continuous polling loop. It blocks until the context is canceled.
+// Contract:
+// - On graceful shutdown (context cancelled), drains the current batch before exiting
+// - On Dequeue error, logs and retries (exponential backoff)
+// - On storage error, routes batch to DLQ and retries Commit
+// - On Commit error, retries Commit on next loop iteration (does NOT proceed to Dequeue)
 func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	slog.Info("worker daemon started polling")
+	slog.Info("worker daemon started")
+
+	// Backoff for Dequeue/Commit failures
+	dequeueBackoff := 100 * time.Millisecond
+	const maxDequeueBackoff = 5 * time.Second
 
 	for {
+		// Check for graceful shutdown
 		select {
 		case <-ctx.Done():
-			slog.Info("worker daemon shutting down cleanly")
+			slog.Info("worker daemon shutdown signal received; exiting cleanly")
 			return
 		default:
-			// tumbling window: blocks for up to 2s OR until 1024 events are ready
-			events, err := d.reader.Dequeue(ctx, 1024)
-			if err != nil {
-				telemetry.WorkerBatchesTotal.WithLabelValues("error").Inc()
-				slog.Error("failed to dequeue events", "error", err)
-				continue
-			}
+		}
 
-			// no events in this window, loop again
-			if len(events) == 0 {
-				continue
-			}
-
-			telemetry.WorkerBatchesTotal.WithLabelValues("ok").Inc()
-			telemetry.WorkerBatchSize.Observe(float64(len(events)))
-
-			uniqueEvents := make([]types.Event, 0, len(events))
-			for _, ev := range events {
-				// data type / schema validation (UUID verification)
-				if _, err := uuid.Parse(ev.EventID); err != nil {
-					telemetry.WorkerEventsDropped.WithLabelValues("invalid_uuid").Inc()
-					slog.Warn("malformed event_id intercepted; diverting to DLQ", "event_id", ev.EventID, "error", err)
-					marshaled, _ := json.Marshal(ev)
-					if dlqErr := d.dlq.WriteToDLQ(ctx, fmt.Sprintf("invalid UUID format: %v", err), string(marshaled)); dlqErr != nil {
-						telemetry.DLQWritesTotal.WithLabelValues("invalid_uuid", "error").Inc()
-						slog.Error("failed to write to DLQ — message lost", "error", dlqErr, "event_id", ev.EventID)
-					} else {
-						telemetry.DLQWritesTotal.WithLabelValues("invalid_uuid", "ok").Inc()
-					}
-					continue
-				}
-
-				// check-and-set BEFORE storage write to prevent duplicate rows in ClickHouse
-				// if redis fails, we conservatively include the event (prefer duplicates over loss)
-				isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID)
-				if err != nil {
-					slog.Error("redis dedup check failed; conservatively including event", "error", err, "event_id", ev.EventID)
-					uniqueEvents = append(uniqueEvents, ev)
-					continue
-				}
-
-				if isDup {
-					telemetry.WorkerDuplicatesTotal.Inc()
-					slog.Warn("duplicate event detected and dropped", "event_id", ev.EventID)
-					continue
-				}
-
-				uniqueEvents = append(uniqueEvents, ev)
-			}
-
-			// write to database
-			if len(uniqueEvents) > 0 {
-				insertStart := time.Now()
-				err := d.storage.BulkInsert(ctx, uniqueEvents)
-				telemetry.StorageInsertDuration.Observe(time.Since(insertStart).Seconds())
-
-				if err != nil {
-					telemetry.StorageInsertsTotal.WithLabelValues("error").Inc()
-					slog.Error("bulk insert failed permanently; diverting to DLQ", "error", err, "batch_size", len(uniqueEvents))
-
-					// move the entire failed batch to DLQ if storage fails permanently
-					for _, ev := range uniqueEvents {
-						marshaled, _ := json.Marshal(ev)
-						if dlqErr := d.dlq.WriteToDLQ(ctx, fmt.Sprintf("storage failure: %v", err), string(marshaled)); dlqErr != nil {
-							telemetry.DLQWritesTotal.WithLabelValues("storage_error", "error").Inc()
-						} else {
-							telemetry.DLQWritesTotal.WithLabelValues("storage_error", "ok").Inc()
-						}
-					}
-					// we continue to Commit() so this "poison batch" isn't retried forever
-				} else {
-					telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
-					telemetry.StorageEventsInserted.Add(float64(len(uniqueEvents)))
-				}
-
-				slog.Info("processed batch successfully",
-					"unique_events", len(uniqueEvents),
-					"dropped", len(events)-len(uniqueEvents),
-					"last_request_id", uniqueEvents[len(uniqueEvents)-1].RequestID,
-				)
-			}
-
-			// acknowledge the batch in redis
+		// Retry failed Commit before proceeding to Dequeue
+		if d.pendingCommitErr != nil {
+			slog.Info("retrying previous failed commit",
+				"batch_size", d.lastBatchSize,
+				"previous_error", d.pendingCommitErr,
+			)
 			if err := d.reader.Commit(ctx); err != nil {
 				telemetry.CommitFailuresTotal.Inc()
-				slog.Error("failed to commit batch in redis — batch will be redelivered", "error", err)
+				slog.Error("commit still failing; will retry on next loop iteration",
+					"error", err,
+					"batch_size", d.lastBatchSize,
+				)
+				d.pendingCommitErr = err
+
+				// Back off briefly to avoid tight retry loop if Commit keeps failing
+				time.Sleep(dequeueBackoff)
+				if dequeueBackoff < maxDequeueBackoff {
+					dequeueBackoff *= 2
+				}
+				continue
 			}
+
+			// Commit succeeded; clear error state and reset backoff
+			slog.Info("commit retry succeeded", "batch_size", d.lastBatchSize)
+			d.pendingCommitErr = nil
+			d.lastBatchSize = 0
+			dequeueBackoff = 100 * time.Millisecond
+		}
+
+		// Dequeue: blocks for up to 2s OR until batchSize events are ready
+		events, err := d.reader.Dequeue(ctx, 1024)
+		if err != nil {
+			// Check if context was cancelled during Dequeue
+			if errors.Is(err, context.Canceled) {
+				slog.Info("worker daemon shutting down (context cancelled)")
+				return
+			}
+
+			telemetry.WorkerBatchesTotal.WithLabelValues("error").Inc()
+			slog.Error("failed to dequeue events", "error", err)
+
+			// Back off before retrying Dequeue
+			time.Sleep(dequeueBackoff)
+			if dequeueBackoff < maxDequeueBackoff {
+				dequeueBackoff *= 2
+			}
+			continue
+		}
+
+		// Reset backoff on successful Dequeue
+		dequeueBackoff = 100 * time.Millisecond
+
+		// No events in this window; loop again
+		if len(events) == 0 {
+			continue
+		}
+
+		telemetry.WorkerBatchesTotal.WithLabelValues("ok").Inc()
+		telemetry.WorkerBatchSize.Observe(float64(len(events)))
+
+		// Process events: validate, dedup, filter
+		uniqueEvents, droppedCount := d.processEvents(ctx, events)
+
+		// Write to storage if any events passed filtering
+		if len(uniqueEvents) > 0 {
+			d.handleStorageInsert(ctx, uniqueEvents)
+		}
+
+		// Log batch processing summary
+		if len(uniqueEvents) > 0 || droppedCount > 0 {
+			lastRequestID := ""
+			if len(uniqueEvents) > 0 {
+				lastRequestID = uniqueEvents[len(uniqueEvents)-1].RequestID
+			}
+
+			slog.Info("processed batch",
+				"total_events", len(events),
+				"unique_events", len(uniqueEvents),
+				"dropped", droppedCount,
+				"last_request_id", lastRequestID,
+			)
+		}
+
+		// Commit the batch in Redis
+		// This acknowledges ALL events (including dropped ones) from this Dequeue call.
+		// If Commit fails, we retry on the next loop iteration and do NOT Dequeue again.
+		if err := d.reader.Commit(ctx); err != nil {
+			telemetry.CommitFailuresTotal.Inc()
+			slog.Error("failed to commit batch; will retry on next iteration",
+				"error", err,
+				"batch_size", len(events),
+			)
+			d.pendingCommitErr = err
+			d.lastBatchSize = len(events)
+			continue
+		}
+
+		// Commit succeeded; clear any error state
+		d.pendingCommitErr = nil
+		d.lastBatchSize = 0
+	}
+}
+
+// processEvents filters and deduplicates a batch of raw events.
+// Returns (uniqueEvents, droppedCount).
+// Errors during validation or dedup are logged and events are either dropped or conservatively included.
+func (d *Daemon) processEvents(ctx context.Context, events []types.Event) ([]types.Event, int) {
+	uniqueEvents := make([]types.Event, 0, len(events))
+	droppedCount := 0
+
+	for _, ev := range events {
+		// Validate UUID format
+		if _, err := uuid.Parse(ev.EventID); err != nil {
+			telemetry.WorkerEventsDropped.WithLabelValues("invalid_uuid").Inc()
+			slog.Warn("invalid event_id; routing to DLQ",
+				"event_id", ev.EventID,
+				"error", err,
+			)
+			d.routeToDLQ(ctx, ev, fmt.Sprintf("invalid UUID format: %v", err))
+			droppedCount++
+			continue
+		}
+
+		// Check for duplicates using Redis-backed deduplicator
+		// If Redis is unavailable, conservatively include the event (prefer duplicates over loss)
+		isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID)
+		if err != nil {
+			// Redis failure: log and include event
+			slog.Warn("dedup check failed; conservatively including event",
+				"error", err,
+				"event_id", ev.EventID,
+			)
+			uniqueEvents = append(uniqueEvents, ev)
+			continue
+		}
+
+		if isDup {
+			telemetry.WorkerDuplicatesTotal.Inc()
+			slog.Warn("duplicate event dropped", "event_id", ev.EventID)
+			droppedCount++
+			continue
+		}
+
+		uniqueEvents = append(uniqueEvents, ev)
+	}
+
+	return uniqueEvents, droppedCount
+}
+
+// handleStorageInsert attempts to persist a batch of events to storage.
+// If storage fails, routes the entire batch to DLQ.
+// Returns true if insert succeeded.
+func (d *Daemon) handleStorageInsert(ctx context.Context, events []types.Event) {
+	insertStart := time.Now()
+	err := d.storage.BulkInsert(ctx, events)
+	duration := time.Since(insertStart)
+	telemetry.StorageInsertDuration.Observe(duration.Seconds())
+
+	if err != nil {
+		telemetry.StorageInsertsTotal.WithLabelValues("error").Inc()
+		slog.Error("storage bulk insert failed; routing batch to DLQ",
+			"error", err,
+			"batch_size", len(events),
+			"duration", duration.String(),
+		)
+
+		// Route entire failed batch to DLQ to avoid losing them forever
+		failureReason := fmt.Sprintf("storage failure: %v", err)
+		for _, ev := range events {
+			d.routeToDLQ(ctx, ev, failureReason)
+		}
+		return
+	}
+
+	telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
+	telemetry.StorageEventsInserted.Add(float64(len(events)))
+	slog.Debug("storage insert succeeded",
+		"batch_size", len(events),
+		"duration", duration.String(),
+	)
+}
+
+// routeToDLQ writes a single event to the dead-letter queue.
+// If DLQ write fails, logs the error but does NOT fail the batch.
+// The event is acknowledged in Redis as if it was successfully processed
+// (since it's unrecoverable anyway).
+func (d *Daemon) routeToDLQ(ctx context.Context, event types.Event, reason string) {
+	marshaled, err := json.Marshal(event)
+	if err != nil {
+		// Event marshalling failed; create a minimal DLQ entry
+		slog.Error("failed to marshal event for DLQ",
+			"error", err,
+			"event_id", event.EventID,
+			"reason", reason,
+		)
+		telemetry.DLQWritesTotal.WithLabelValues("marshal_error", "error").Inc()
+		return
+	}
+
+	// Determine the DLQ reason category for telemetry
+	reasonCategory := "unknown"
+	if len(reason) > 0 {
+		// Extract category from reason string (e.g., "invalid UUID format" → "invalid_uuid")
+		if json.Valid(marshaled) {
+			reasonCategory = "validation_error"
+		} else {
+			reasonCategory = "parse_error"
 		}
 	}
+
+	if dlqErr := d.dlq.WriteToDLQ(ctx, reason, string(marshaled)); dlqErr != nil {
+		telemetry.DLQWritesTotal.WithLabelValues(reasonCategory, "error").Inc()
+		slog.Error("failed to write event to DLQ; event will be lost",
+			"error", dlqErr,
+			"event_id", event.EventID,
+			"reason", reason,
+		)
+		return
+	}
+
+	telemetry.DLQWritesTotal.WithLabelValues(reasonCategory, "ok").Inc()
+	slog.Debug("event routed to DLQ", "event_id", event.EventID, "reason", reason)
 }

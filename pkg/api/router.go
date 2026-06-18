@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/auth"
+	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -28,13 +29,17 @@ func (rw *responseWriter) WriteHeader(code int) {
 type RouterConfig struct {
 	EventQueue queue.EventQueue
 	Auth       auth.Authenticator
+	Dedup      *cache.Deduplicator
 }
 
 func NewRouter(cfg *RouterConfig) http.Handler {
 	mux := http.NewServeMux()
 
 	// instantiate the handler with the injected dependency
-	trackHandler := &TrackHandler{EventQueue: cfg.EventQueue}
+	trackHandler := &TrackHandler{
+		EventQueue: cfg.EventQueue,
+		Dedup:      cfg.Dedup,
+	}
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)

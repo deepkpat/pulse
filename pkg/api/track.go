@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
@@ -14,7 +15,8 @@ import (
 )
 
 type TrackHandler struct {
-	EventQueue queue.EventQueue // dependency injected
+	EventQueue queue.EventQueue    // dependency injected
+	Dedup      *cache.Deduplicator // dependency injected
 }
 
 func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +55,19 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		telemetry.PayloadRejectedTotal.WithLabelValues("invalid_uuid").Inc()
 		logger.Warn("invalid event_id format (must be UUID)", "event_id", raw.EventID, "error", err)
 		http.Error(w, "event_id must be a valid UUID", http.StatusBadRequest)
+		return
+	}
+
+	// early deduplication to prevent flooding the stream
+	isDup, err := h.Dedup.CheckAndSet(r.Context(), raw.EventID)
+	if err != nil {
+		// conservative fallback: if redis is down, we allow the event through
+		// to avoid data loss, trusting the worker-side dedup to handle it later.
+		logger.Error("api dedup check failed; conservatively allowing event", "error", err, "event_id", raw.EventID)
+	} else if isDup {
+		telemetry.PayloadRejectedTotal.WithLabelValues("duplicate").Inc()
+		logger.Warn("duplicate event intercepted at api edge", "event_id", raw.EventID)
+		w.WriteHeader(http.StatusAccepted) // still return 202 to the client
 		return
 	}
 

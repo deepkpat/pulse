@@ -54,7 +54,7 @@ var (
 	PayloadRejectedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pulse_payload_rejected_total",
 		Help: "Events rejected at the API layer before enqueue.",
-	}, []string{"reason"}) // labels: "too_large", "bad_json", "missing_fields"
+	}, []string{"reason"}) // labels: "too_large", "bad_json", "missing_fields", "duplicate"
 
 	// --- Worker ---
 

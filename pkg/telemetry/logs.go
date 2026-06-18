@@ -6,11 +6,13 @@ import (
 	"os"
 )
 
-type ctxKey struct{}
+// define distinct, unexported types for each key
+type loggerKeyType struct{}
+type requestIDType struct{}
 
 var (
-	loggerKey    = ctxKey{}
-	requestIDKey = ctxKey{}
+	loggerKey    = loggerKeyType{}
+	requestIDKey = requestIDType{}
 )
 
 // InitLogger sets up a global structured JSON logger based on the environment.
