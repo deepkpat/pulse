@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS pulse.pulse_events (
     event_name String,
     user_id String,
     timestamp DateTime64(3, 'UTC'),
+    request_id String,
     properties Map(String, String)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)

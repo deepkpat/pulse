@@ -8,7 +8,10 @@ import (
 
 type ctxKey struct{}
 
-var loggerKey = ctxKey{}
+var (
+	loggerKey    = ctxKey{}
+	requestIDKey = ctxKey{}
+)
 
 // InitLogger sets up a global structured JSON logger based on the environment.
 func InitLogger(env string) {
@@ -44,4 +47,17 @@ func FromContext(ctx context.Context) *slog.Logger {
 		return logger
 	}
 	return slog.Default()
+}
+
+// ToRequestIDContext embeds a request ID into the context.
+func ToRequestIDContext(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDKey, requestID)
+}
+
+// GetRequestID extracts the request ID from context or returns an empty string.
+func GetRequestID(ctx context.Context) string {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
+		return id
+	}
+	return ""
 }

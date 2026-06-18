@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -35,7 +36,7 @@ func NewClickHouseStorage(addr, user, password, database string) (*ClickHouseSto
 }
 
 // BulkInsert pushes a batch of events to ClickHouse using native high-performance batching.
-// It features an infinite exponential backoff loop to fulfill RFC's backpressure constraint.
+// It features a bounded exponential backoff loop to fulfill RFC's backpressure constraint.
 func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -43,8 +44,9 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 
 	backoff := 128 * time.Millisecond
 	maxBackoff := 32 * time.Second
+	maxRetries := 4
 
-	for {
+	for i := 0; i < maxRetries; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -54,8 +56,14 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 				return nil // success! exit retry loop
 			}
 
+			// if it's a permanent error (like schema mismatch or auth), don't retry
+			if isPermanent(err) {
+				return fmt.Errorf("permanent clickhouse error: %w", err)
+			}
+
 			slog.Error("ClickHouse batch insert failed. Backing off before retry.",
 				"error", err,
+				"retry_count", i+1,
 				"retry_delay", backoff.String(),
 				"batch_size", len(events),
 			)
@@ -75,6 +83,32 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 			}
 		}
 	}
+
+	return fmt.Errorf("failed to insert batch into clickhouse after %d retries", maxRetries)
+}
+
+// isPermanent returns true if the error is considered non-retryable.
+func isPermanent(err error) bool {
+	// this is a heuristic. in production, we would check for specific ClickHouse error codes (like 170, 43 etc)
+	errMsg := err.Error()
+	// common non-retryable strings
+	permanentKeywords := []string{
+		"schema mismatch",
+		"invalid type",
+		"auth failed",
+		"authentication failed",
+		"no such table",
+		"table does not exist",
+		"column does not exist",
+		"ACCESS_DENIED",
+	}
+
+	for _, kw := range permanentKeywords {
+		if strings.Contains(strings.ToLower(errMsg), strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
 }
 
 // executeBatch performs the raw columnar batch append operation
@@ -88,8 +122,8 @@ func (c *ClickHouseStorage) executeBatch(ctx context.Context, events []types.Eve
 		// ClickHouse expects native string representation of UUIDs parsed into an actual UUID object
 		parsedUUID, err := uuid.Parse(ev.EventID)
 		if err != nil {
-			slog.Warn("malformed event_id skipped during batch compilation", "event_id", ev.EventID, "error", err)
-			continue
+			// return error instead of silently skipping, to avoid silent data loss
+			return fmt.Errorf("invalid uuid in batch: %s: %w", ev.EventID, err)
 		}
 
 		err = batch.Append(
@@ -97,6 +131,7 @@ func (c *ClickHouseStorage) executeBatch(ctx context.Context, events []types.Eve
 			ev.EventName,
 			ev.UserID,
 			ev.Timestamp,
+			ev.RequestID,
 			ev.Properties,
 		)
 		if err != nil {

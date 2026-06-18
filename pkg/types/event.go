@@ -17,5 +17,6 @@ type Event struct {
 	EventName  string            `json:"event_name"`
 	UserID     string            `json:"user_id"`
 	Timestamp  time.Time         `json:"timestamp"`
+	RequestID  string            `json:"request_id"`
 	Properties map[string]string `json:"properties"`
 }

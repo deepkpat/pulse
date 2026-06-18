@@ -71,6 +71,7 @@ func LoggerMiddleware(next http.Handler) http.Handler {
 
 		// pass it down the context chain
 		ctx := telemetry.ToContext(r.Context(), logger)
+		ctx = telemetry.ToRequestIDContext(ctx, reqID)
 		r = r.WithContext(ctx)
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}

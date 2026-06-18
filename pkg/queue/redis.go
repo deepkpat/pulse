@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/types"
@@ -17,6 +18,7 @@ type RedisQueue struct {
 	streamName   string
 	groupName    string
 	consumerName string
+	mu           sync.Mutex
 	lastReadIDs  []string // tracks unacknowledged message IDs for Commit()
 }
 
@@ -46,6 +48,9 @@ func (r *RedisQueue) Enqueue(ctx context.Context, event types.Event) error {
 // Dequeue fetches messages from the stream. It prioritizes recovering uncommitted
 // messages ("0") from previous runs before fetching brand-new messages (">").
 func (r *RedisQueue) Dequeue(ctx context.Context, batchSize uint64) ([]types.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.lastReadIDs = []string{}
 
 	// check for pending, uncommitted messages assigned to this consumer
@@ -66,7 +71,7 @@ func (r *RedisQueue) fetchFromStream(ctx context.Context, id string, batchSize u
 	streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    r.groupName,
 		Consumer: r.consumerName,
-		Streams:  []string{r.streamName, string(id)},
+		Streams:  []string{r.streamName, id},
 		Count:    int64(batchSize),
 		Block:    blockTime,
 	}).Result()
@@ -111,6 +116,9 @@ func (r *RedisQueue) fetchFromStream(ctx context.Context, id string, batchSize u
 // Commit acknowledges the current batch of messages using XACK.
 // Returns an error if the acknowledgement fails; messages will be redelivered by Redis.
 func (r *RedisQueue) Commit(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if len(r.lastReadIDs) > 0 {
 		if err := r.client.XAck(ctx, r.streamName, r.groupName, r.lastReadIDs...).Err(); err != nil {
 			slog.Error("XAck failed — batch will be redelivered", "error", err, "ids", r.lastReadIDs)

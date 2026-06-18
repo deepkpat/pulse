@@ -60,7 +60,7 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 			telemetry.WorkerBatchesTotal.WithLabelValues("ok").Inc()
 			telemetry.WorkerBatchSize.Observe(float64(len(events)))
 
-			validEvents := make([]types.Event, 0, len(events))
+			uniqueEvents := make([]types.Event, 0, len(events))
 			for _, ev := range events {
 				// data type / schema validation (UUID verification)
 				if _, err := uuid.Parse(ev.EventID); err != nil {
@@ -74,41 +74,56 @@ func (d *Daemon) Start(ctx context.Context, wg *sync.WaitGroup) {
 						telemetry.DLQWritesTotal.WithLabelValues("invalid_uuid", "ok").Inc()
 					}
 					continue
-					// safely skip adding to validEvents.
-					// Commit() will clear it out of redis.
 				}
 
-				validEvents = append(validEvents, ev)
+				// check-and-set BEFORE storage write to prevent duplicate rows in ClickHouse
+				// if redis fails, we conservatively include the event (prefer duplicates over loss)
+				isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID)
+				if err != nil {
+					slog.Error("redis dedup check failed; conservatively including event", "error", err, "event_id", ev.EventID)
+					uniqueEvents = append(uniqueEvents, ev)
+					continue
+				}
+
+				if isDup {
+					telemetry.WorkerDuplicatesTotal.Inc()
+					slog.Warn("duplicate event detected and dropped", "event_id", ev.EventID)
+					continue
+				}
+
+				uniqueEvents = append(uniqueEvents, ev)
 			}
 
 			// write to database
-			if len(validEvents) > 0 {
+			if len(uniqueEvents) > 0 {
 				insertStart := time.Now()
-				err := d.storage.BulkInsert(ctx, validEvents)
+				err := d.storage.BulkInsert(ctx, uniqueEvents)
 				telemetry.StorageInsertDuration.Observe(time.Since(insertStart).Seconds())
 
 				if err != nil {
 					telemetry.StorageInsertsTotal.WithLabelValues("error").Inc()
-					slog.Error("worker context canceled during database backoff loop", "error", err)
-					continue // if the context was canceled, loop and let case <-ctx.Done() catch it
-				}
-				telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
-				telemetry.StorageEventsInserted.Add(float64(len(validEvents)))
+					slog.Error("bulk insert failed permanently; diverting to DLQ", "error", err, "batch_size", len(uniqueEvents))
 
-				// dedup is marked AFTER successful storage write to prevent event loss on retry
-				// if CheckAndSet fails, we conservatively include the event (already written)
-				for _, ev := range validEvents {
-					if isDup, err := d.dedup.CheckAndSet(ctx, ev.EventID); err != nil {
-						slog.Error("redis dedup mark failed post-write", "error", err, "event_id", ev.EventID)
-					} else if isDup {
-						telemetry.WorkerDuplicatesTotal.Inc()
-						// this should not normally happen since we haven't marked before write,
-						// but handle it defensively.
-						slog.Warn("duplicate event detected post-write (race condition?)", "event_id", ev.EventID)
+					// move the entire failed batch to DLQ if storage fails permanently
+					for _, ev := range uniqueEvents {
+						marshaled, _ := json.Marshal(ev)
+						if dlqErr := d.dlq.WriteToDLQ(ctx, fmt.Sprintf("storage failure: %v", err), string(marshaled)); dlqErr != nil {
+							telemetry.DLQWritesTotal.WithLabelValues("storage_error", "error").Inc()
+						} else {
+							telemetry.DLQWritesTotal.WithLabelValues("storage_error", "ok").Inc()
+						}
 					}
+					// we continue to Commit() so this "poison batch" isn't retried forever
+				} else {
+					telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
+					telemetry.StorageEventsInserted.Add(float64(len(uniqueEvents)))
 				}
 
-				slog.Info("processed batch successfully", "valid_events", len(validEvents), "dropped", len(events)-len(validEvents))
+				slog.Info("processed batch successfully",
+					"unique_events", len(uniqueEvents),
+					"dropped", len(events)-len(uniqueEvents),
+					"last_request_id", uniqueEvents[len(uniqueEvents)-1].RequestID,
+				)
 			}
 
 			// acknowledge the batch in redis

@@ -10,6 +10,7 @@ import (
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
+	"github.com/google/uuid"
 )
 
 type TrackHandler struct {
@@ -26,7 +27,8 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var raw types.RawEvent
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		// distinguish between body-too-large and genuinely malformed JSON
-		if maxBytesErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
 			telemetry.PayloadRejectedTotal.WithLabelValues("too_large").Inc()
 			logger.Warn("request body exceeded size limit", "limit_bytes", maxBytesErr.Limit)
 			http.Error(w, "Request body too large (max 64 KB)", http.StatusRequestEntityTooLarge)
@@ -46,6 +48,14 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// validate UUID format
+	if _, err := uuid.Parse(raw.EventID); err != nil {
+		telemetry.PayloadRejectedTotal.WithLabelValues("invalid_uuid").Inc()
+		logger.Warn("invalid event_id format (must be UUID)", "event_id", raw.EventID, "error", err)
+		http.Error(w, "event_id must be a valid UUID", http.StatusBadRequest)
+		return
+	}
+
 	// map and sanitize properties
 	sanitizedProperties := sanitizeProperties(raw.Properties)
 
@@ -55,6 +65,7 @@ func (h *TrackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventName:  raw.EventName,
 		UserID:     raw.UserID,
 		Timestamp:  time.Now().UTC(), // capture server-side truth arrival time
+		RequestID:  telemetry.GetRequestID(r.Context()),
 		Properties: sanitizedProperties,
 	}
 
