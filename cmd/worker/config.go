@@ -38,7 +38,7 @@ func DefaultConfig() *Config {
 		ClickHouse: ClickHouseConfig{
 			Addr:     "localhost:9000",
 			User:     "pulse_ch",
-			Password: "pulse_ch_super_secret_password",
+			Password: "",
 			Database: "pulse",
 		},
 		MetricsAddr: ":9091",

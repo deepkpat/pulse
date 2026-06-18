@@ -48,7 +48,7 @@ func DefaultConfig() *Config {
 			Host:     "localhost",
 			Port:     5432,
 			User:     "pulse_pg",
-			Password: "pulse_pg_super_secret_password",
+			Password: "",
 			DBName:   "pulse",
 			SSLMode:  "disable",
 		},

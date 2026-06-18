@@ -27,7 +27,7 @@ services:
         image: clickhouse/clickhouse-server:25.8-alpine
         environment:
             CLICKHOUSE_USER: pulse_ch
-            CLICKHOUSE_PASSWORD: pulse_ch_super_secret_password
+            CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
             CLICKHOUSE_DB: pulse
         container_name: pulse-clickhouse
         restart: unless-stopped
@@ -57,7 +57,7 @@ services:
         restart: unless-stopped
         environment:
             POSTGRES_USER: pulse_pg
-            POSTGRES_PASSWORD: pulse_pg_super_secret_password
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
             POSTGRES_DB: pulse
         ports:
             - "5432:5432"
@@ -85,7 +85,7 @@ services:
             - PULSE_REDIS_ADDR=redis:6379
             - PULSE_PG_HOST=postgres
             - PULSE_PG_USER=pulse_pg
-            - PULSE_PG_PASSWORD=pulse_pg_super_secret_password
+            - PULSE_PG_PASSWORD=${POSTGRES_PASSWORD}
             - PULSE_PG_DBNAME=pulse
         ports:
             - "8000:8000"
@@ -141,7 +141,7 @@ services:
             - PULSE_REDIS_ADDR=redis:6379
             - PULSE_CLICKHOUSE_ADDR=clickhouse:9000
             - PULSE_CLICKHOUSE_USER=pulse_ch
-            - PULSE_CLICKHOUSE_PASSWORD=pulse_ch_super_secret_password
+            - PULSE_CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
             - PULSE_CLICKHOUSE_DATABASE=pulse
         networks:
             - pulse-net
