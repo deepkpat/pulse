@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -100,7 +101,18 @@ func main() {
 
 	// cancel the context; all goroutines will drain their current batch and exit
 	cancel()
-	wg.Wait()
 
-	slog.Info("all workers exited cleanly")
+	// bounded wait for graceful shutdown to avoid hung processes
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
+
+	select {
+	case <-waitCh:
+		slog.Info("all workers exited cleanly")
+	case <-time.After(30 * time.Second):
+		slog.Warn("graceful shutdown timed out; forcing exit")
+	}
 }
