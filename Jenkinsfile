@@ -2,9 +2,34 @@ pipeline {
     agent any
 
     stages {
-        stage('pulse') {
+        stage('Checkout') {
             steps {
-                echo 'pulse'
+                checkout scm
+            }
+        }
+
+        stage('Test & Coverage') {
+            steps {
+                sh 'go test ./... -coverprofile=coverage.out'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh "${scannerHome}/bin/sonar-scanner"
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
         }
     }
