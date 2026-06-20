@@ -34,8 +34,14 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 timeout(time: 4, unit: 'MINUTES') {
-                    // waits for SonarQube callback to report passing/failing gates
-                    waitForQualityGate abortPipeline: true
+                    script {
+                        def qg = waitForQualityGate()
+                        echo "SonarQube Webhook reported Quality Gate Status: ${qg.status}"
+
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to Quality Gate Failure: ${qg.status}"
+                        }
+                    }
                 }
             }
         }
@@ -43,7 +49,7 @@ pipeline {
 
     post {
         always {
-            echo "pipeline complete. overage outputs preserved for SonarScanner upload."
+            echo "Pipeline run completed execution context."
         }
     }
 }
