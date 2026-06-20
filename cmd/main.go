@@ -125,19 +125,14 @@ func main() {
 // own schema. This removes the need for Docker init-script mounts and mirrors
 // how a managed cloud database (RDS, CloudSQL, etc.) would be handled in prod.
 func migratePostgres(db *sql.DB) error {
-	const ddl = `
-CREATE TABLE IF NOT EXISTS api_keys (
-    key         VARCHAR(64) PRIMARY KEY,
-    description VARCHAR(256) NOT NULL,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+	// read schema from infra/postgres/init.sql
+	migrationPath := "infra/postgres/init.sql"
+	ddl, err := os.ReadFile(migrationPath)
+	if err != nil {
+		return fmt.Errorf("failed to read postgres migration file (%s): %w", migrationPath, err)
+	}
 
--- seed with the development key (SHA-256 hash of 'your-secret-api-key-here')
-INSERT INTO api_keys (key, description)
-VALUES ('48202b6757f08ed91077eb1c2d4ae38f6db0c09a58bd27767e3da6e80d666632', 'development API key')
-ON CONFLICT (key) DO NOTHING;
-`
-	if _, err := db.Exec(ddl); err != nil {
+	if _, err := db.Exec(string(ddl)); err != nil {
 		return fmt.Errorf("postgres migration failed: %w", err)
 	}
 	slog.Info("postgres schema up to date")

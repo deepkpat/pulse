@@ -136,19 +136,14 @@ func main() {
 // its own schema. This removes the need for Docker init-script mounts and
 // mirrors how a managed cloud database would behave in production.
 func migrateClickHouse(ctx context.Context, conn clickhouse.Conn) error {
-	const ddl = `
-CREATE TABLE IF NOT EXISTS pulse.pulse_events (
-    event_id   UUID,
-    event_name String,
-    user_id    String,
-    timestamp  DateTime64(3, 'UTC'),
-    request_id String,
-    properties Map(String, String)
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(timestamp)
-ORDER BY (event_name, timestamp, user_id);
-`
-	if err := conn.Exec(ctx, ddl); err != nil {
+	// read schema from infra/clickhouse/init.sql
+	migrationPath := "infra/clickhouse/init.sql"
+	ddl, err := os.ReadFile(migrationPath)
+	if err != nil {
+		return fmt.Errorf("failed to read clickhouse migration file (%s): %w", migrationPath, err)
+	}
+
+	if err := conn.Exec(ctx, string(ddl)); err != nil {
 		return fmt.Errorf("clickhouse migration failed: %w", err)
 	}
 	slog.Info("clickhouse schema up to date")

@@ -24,8 +24,9 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-# copy binary
+# copy binary and infrastructure files
 COPY --from=builder /app/worker .
+COPY --from=builder /app/infra ./infra
 
 # metrics port
 EXPOSE 9091
