@@ -17,6 +17,7 @@ import (
 	"github.com/deepkpat/pulse/pkg/auth"
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/config"
+	"github.com/deepkpat/pulse/pkg/health"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/redis/go-redis/v9"
@@ -33,6 +34,8 @@ func main() {
 	// setup telemetry
 	telemetry.InitLogger(cfg.Env)
 	telemetry.RegisterMetrics()
+	telemetry.RegisterPostgresHealthMetrics()
+	telemetry.RegisterRedisHealthMetrics()
 
 	slog.Info("initializing application microservice", slog.String("env", cfg.Env))
 
@@ -75,6 +78,11 @@ func main() {
 		slog.Error("failed to run postgres migrations", "error", err)
 		os.Exit(1)
 	}
+
+	// start background health monitor (postgres + redis; no clickhouse in API binary)
+	healthMonitor := health.NewHealthMonitor(nil, db, rdb, 30*time.Second)
+	go healthMonitor.Start(context.Background())
+	defer healthMonitor.Stop()
 
 	pgStorage := auth.NewPostgresAuthenticator(db)
 	defer pgStorage.Close()

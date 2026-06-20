@@ -1,0 +1,71 @@
+groups:
+  - name: pulse_reliability
+    interval: 30s
+    rules:
+      # ===== Connection Health Alerts =====
+
+      - alert: ClickHouseConnectionDown
+        expr: pulse_clickhouse_connection_health == 0
+        for: 30s
+        annotations:
+          summary: "ClickHouse connection down"
+          description: "ClickHouse has been unreachable for 30 seconds. Events will be queued in Redis PEL."
+
+      - alert: PostgresConnectionDown
+        expr: pulse_postgres_connection_health == 0
+        for: 30s
+        annotations:
+          summary: "PostgreSQL connection down"
+          description: "PostgreSQL has been unreachable. API authentication is failing with 503."
+
+      - alert: RedisConnectionDown
+        expr: pulse_redis_connection_health == 0
+        for: 10s
+        annotations:
+          summary: "Redis connection down"
+          description: "Redis is unreachable. Queue and dedup cache are offline."
+
+      # ===== Latency Alerts =====
+
+      - alert: ClickHouseHighLatency
+        expr: histogram_quantile(0.95, rate(pulse_clickhouse_ping_duration_seconds_bucket[5m])) > 0.5
+        for: 2m
+        annotations:
+          summary: "ClickHouse ping latency high"
+          description: "p95 latency > 500ms. Database may be under load or about to fail."
+
+      - alert: PostgresHighLatency
+        expr: histogram_quantile(0.95, rate(pulse_postgres_ping_duration_seconds_bucket[5m])) > 0.1
+        for: 2m
+        annotations:
+          summary: "PostgreSQL ping latency high"
+          description: "p95 latency > 100ms. Database may be under load."
+
+      # ===== Error Rate Alerts =====
+
+      - alert: StorageTransientErrorsIncreasing
+        expr: rate(pulse_storage_inserts_total{result="error_transient"}[5m]) > 0.1
+        annotations:
+          summary: "Storage transient errors increasing"
+          description: "{{ $value | humanize }} errors/sec. ClickHouse may be unreachable. Batches are queued in Redis PEL."
+
+      - alert: StoragePermanentErrorsDetected
+        expr: rate(pulse_storage_inserts_total{result="error_permanent"}[5m]) > 0.01
+        annotations:
+          summary: "Storage permanent errors detected"
+          description: "{{ $value | humanize }} errors/sec. Check ClickHouse schema and auth config."
+
+      - alert: AuthTransientErrorsIncreasing
+        expr: rate(pulse_auth_validations_total{result="error_transient"}[5m]) > 0.05
+        annotations:
+          summary: "Auth transient errors increasing"
+          description: "PostgreSQL connectivity issues detected. API returning 503."
+
+      # ===== Data Loss Prevention =====
+
+      - alert: DLQBacklogIncreasing
+        expr: rate(pulse_dlq_writes_total[5m]) > 1
+        for: 1m
+        annotations:
+          summary: "DLQ backlog increasing"
+          description: "{{ $value | humanize }} events/sec being written to DLQ. Check for permanent storage failures."

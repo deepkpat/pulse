@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	pulserrors "github.com/deepkpat/pulse/pkg/errors"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 )
 
@@ -19,6 +21,7 @@ func Middleware(auth Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			logger := telemetry.FromContext(ctx)
 			key := r.Header.Get("X-API-Key")
 
 			if key == "" {
@@ -40,9 +43,24 @@ func Middleware(auth Authenticator) func(http.Handler) http.Handler {
 			telemetry.AuthValidationDuration.Observe(time.Since(authStart).Seconds())
 
 			if err != nil {
-				telemetry.FromContext(ctx).Error("api key validation failed", "error", err)
-				telemetry.AuthValidationsTotal.WithLabelValues("error").Inc()
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				// Classify the error so operators see transient vs permanent failures.
+				classification := pulserrors.ClassifyError(err)
+
+				if classification == "transient" {
+					// Database is unreachable; return 503 so load balancers can retry.
+					telemetry.AuthValidationsTotal.WithLabelValues("error_transient").Inc()
+					logger.Warn("api key validation failed: database unavailable",
+						slog.String("error", err.Error()),
+					)
+					http.Error(w, "Service Temporarily Unavailable", http.StatusServiceUnavailable)
+				} else {
+					// Other internal error; return 500.
+					telemetry.AuthValidationsTotal.WithLabelValues("error_permanent").Inc()
+					logger.Error("api key validation failed: internal error",
+						slog.String("error", err.Error()),
+					)
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				}
 				return
 			}
 

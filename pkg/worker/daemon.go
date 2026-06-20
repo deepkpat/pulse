@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/deepkpat/pulse/pkg/cache"
+	pulserrors "github.com/deepkpat/pulse/pkg/errors"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/telemetry"
@@ -210,36 +211,56 @@ func (d *Daemon) processEvents(ctx context.Context, events []types.Event) ([]typ
 }
 
 // handleStorageInsert attempts to persist a batch of events to storage.
-// If storage fails, routes the entire batch to DLQ.
-// Returns true if insert succeeded.
+// Distinguishes between transient and permanent failures:
+//   - Transient (network down, timeout): Skip DLQ, return without Commit so
+//     the batch stays in Redis PEL and is redelivered on the next iteration.
+//   - Permanent (schema error, auth error): Route to DLQ, then fall through
+//     to Commit so the batch is acknowledged and not retried forever.
 func (d *Daemon) handleStorageInsert(ctx context.Context, events []types.Event) {
 	insertStart := time.Now()
 	err := d.storage.BulkInsert(ctx, events)
 	duration := time.Since(insertStart)
 	telemetry.StorageInsertDuration.Observe(duration.Seconds())
 
-	if err != nil {
-		telemetry.StorageInsertsTotal.WithLabelValues("error").Inc()
-		slog.Error("storage bulk insert failed; routing batch to DLQ",
-			"error", err,
-			"batch_size", len(events),
-			"duration", duration.String(),
+	if err == nil {
+		telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
+		telemetry.StorageEventsInserted.Add(float64(len(events)))
+		slog.Debug("storage insert succeeded",
+			slog.Int("batch_size", len(events)),
+			slog.String("duration", duration.String()),
 		)
-
-		// Route entire failed batch to DLQ to avoid losing them forever
-		failureReason := fmt.Sprintf("storage failure: %v", err)
-		for _, ev := range events {
-			d.routeToDLQ(ctx, ev, failureReason)
-		}
 		return
 	}
 
-	telemetry.StorageInsertsTotal.WithLabelValues("ok").Inc()
-	telemetry.StorageEventsInserted.Add(float64(len(events)))
-	slog.Debug("storage insert succeeded",
-		"batch_size", len(events),
-		"duration", duration.String(),
+	// Classify the error before deciding what to do with the batch.
+	classification := pulserrors.ClassifyError(err)
+
+	if classification == "transient" {
+		// Transient error (network, timeout, connection refused).
+		// Do NOT send to DLQ. Return without calling Commit so the
+		// batch stays in the Redis PEL and is redelivered next iteration.
+		telemetry.StorageInsertsTotal.WithLabelValues("error_transient").Inc()
+		slog.Warn("storage bulk insert failed (transient); batch will be retried",
+			slog.String("error", err.Error()),
+			slog.Int("batch_size", len(events)),
+			slog.String("duration", duration.String()),
+		)
+		return
+	}
+
+	// Permanent error (schema, auth, validation).
+	// Route to DLQ to avoid reprocessing forever.
+	telemetry.StorageInsertsTotal.WithLabelValues("error_permanent").Inc()
+	slog.Error("storage bulk insert failed (permanent); routing batch to DLQ",
+		slog.String("error", err.Error()),
+		slog.Int("batch_size", len(events)),
+		slog.String("duration", duration.String()),
 	)
+
+	failureReason := fmt.Sprintf("permanent storage failure: %v", err)
+	for _, ev := range events {
+		d.routeToDLQ(ctx, ev, failureReason)
+	}
 }
 
 // routeToDLQ writes a single event to the dead-letter queue.

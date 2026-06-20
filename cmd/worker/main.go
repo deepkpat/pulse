@@ -15,6 +15,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/deepkpat/pulse/pkg/cache"
 	"github.com/deepkpat/pulse/pkg/config"
+	"github.com/deepkpat/pulse/pkg/health"
 	"github.com/deepkpat/pulse/pkg/queue"
 	"github.com/deepkpat/pulse/pkg/storage"
 	"github.com/deepkpat/pulse/pkg/telemetry"
@@ -34,6 +35,8 @@ func main() {
 	// setup telemetry
 	telemetry.InitLogger(cfg.Env)
 	telemetry.RegisterMetrics()
+	telemetry.RegisterClickHouseHealthMetrics()
+	telemetry.RegisterRedisHealthMetrics()
 
 	slog.Info("initializing worker daemon microservice",
 		slog.String("env", cfg.Env),
@@ -86,6 +89,11 @@ func main() {
 	}
 
 	chStorage := storage.NewClickHouseStorage(chConn)
+
+	// start background health monitor (clickhouse + redis; no postgres in worker binary)
+	healthMonitor := health.NewHealthMonitor(chConn, nil, rdb, 30*time.Second)
+	go healthMonitor.Start(context.Background())
+	defer healthMonitor.Stop()
 
 	// setup graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())

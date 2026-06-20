@@ -28,7 +28,7 @@ var (
 	AuthValidationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pulse_auth_validations_total",
 		Help: "API key validation outcomes.",
-	}, []string{"result"}) // labels: "ok", "invalid", "missing", "error"
+	}, []string{"result"}) // labels: "ok", "invalid", "missing", "error_transient", "error_permanent"
 
 	// Tracks how long the Postgres auth lookup takes.
 	AuthValidationDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -94,7 +94,7 @@ var (
 	StorageInsertsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pulse_storage_inserts_total",
 		Help: "ClickHouse BulkInsert outcomes.",
-	}, []string{"result"}) // labels: "ok", "error"
+	}, []string{"result"}) // labels: "ok", "error_transient", "error_permanent"
 
 	// Retry attempts inside the backoff loop — spikes mean CH is struggling.
 	StorageRetries = prometheus.NewCounter(prometheus.CounterOpts{

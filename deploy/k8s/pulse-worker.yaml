@@ -51,17 +51,18 @@ spec:
                           cpu: "500m"
                           memory: "256Mi"
 ---
-# pulse-worker Service (ClusterIP — only the metrics port needs in-cluster access)
+# pulse-worker Service (NodePort so metrics are reachable from outside the cluster)
 apiVersion: v1
 kind: Service
 metadata:
     name: pulse-worker-metrics
     namespace: pulse
 spec:
-    type: ClusterIP
+    type: NodePort
     selector:
         app: pulse-worker
     ports:
         - name: metrics
           port: 9091
           targetPort: 9091
+          nodePort: 30901

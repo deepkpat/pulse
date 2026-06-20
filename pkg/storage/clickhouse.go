@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
-	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	pulserrors "github.com/deepkpat/pulse/pkg/errors"
 	"github.com/deepkpat/pulse/pkg/telemetry"
 	"github.com/deepkpat/pulse/pkg/types"
 	"github.com/google/uuid"
@@ -44,7 +44,7 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 			return nil
 		}
 
-		if isPermanentError(err) {
+		if pulserrors.IsPermanentError(err) {
 			return fmt.Errorf("permanent clickhouse error: %w", err)
 		}
 
@@ -77,34 +77,7 @@ func (c *ClickHouseStorage) BulkInsert(ctx context.Context, events []types.Event
 	return fmt.Errorf("failed to insert batch into clickhouse after %d attempts", maxRetries)
 }
 
-// isPermanentError returns true if the error is unrecoverable (e.g., auth, schema mismatch).
-func isPermanentError(err error) bool {
-	if err == nil {
-		return false
-	}
 
-	errMsg := strings.ToLower(err.Error())
-	permanentKeywords := []string{
-		"schema mismatch",
-		"invalid type",
-		"auth failed",
-		"authentication failed",
-		"no such table",
-		"table does not exist",
-		"column does not exist",
-		"access_denied",
-		"permission denied",
-		"unknown table",
-		"syntax error",
-	}
-
-	for _, kw := range permanentKeywords {
-		if strings.Contains(errMsg, kw) {
-			return true
-		}
-	}
-	return false
-}
 
 // executeBatch performs an atomic columnar batch append.
 // If any single event validation or insertion fails, the entire batch is rejected.
