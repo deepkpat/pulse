@@ -1,3 +1,4 @@
 tmp/
-
 .env
+.go_dist/
+go_dist/
