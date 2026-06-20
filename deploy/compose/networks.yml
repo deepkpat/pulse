@@ -1,0 +1,3 @@
+networks:
+  pulse-net:
+    driver: bridge

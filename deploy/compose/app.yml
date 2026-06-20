@@ -1,0 +1,48 @@
+services:
+  # pulse api server
+  pulse-api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.api
+    container_name: pulse-api
+    restart: unless-stopped
+    environment:
+      - PULSE_ENV=production
+      - PULSE_REDIS_ADDR=redis:6379
+      - PULSE_PG_HOST=postgres
+      - PULSE_PG_USER=pulse_pg
+      - PULSE_PG_PASSWORD=${POSTGRES_PASSWORD}
+      - PULSE_PG_DBNAME=pulse
+    ports:
+      - "8000:8000"
+    networks:
+      - pulse-net
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # pulse workers
+  pulse-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    environment:
+      - PULSE_ENV=production
+      - PULSE_CONCURRENCY=2
+      - PULSE_REDIS_ADDR=redis:6379
+      - PULSE_CLICKHOUSE_ADDR=clickhouse:9000
+      - PULSE_CLICKHOUSE_USER=pulse_ch
+      - PULSE_CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - PULSE_CLICKHOUSE_DATABASE=pulse
+    networks:
+      - pulse-net
+    deploy:
+      replicas: 2
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy

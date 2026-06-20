@@ -1,0 +1,12 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    container_name: pulse-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    networks:
+      - pulse-net
+    volumes:
+      - ../../infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
