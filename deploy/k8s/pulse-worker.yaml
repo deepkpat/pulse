@@ -1,0 +1,67 @@
+# pulse-worker Deployment
+# Connects to Redis and ClickHouse running in Docker Compose on the host machine.
+# minikube exposes the host via the special DNS name: host.minikube.internal
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: pulse-worker
+    namespace: pulse
+    labels:
+        app: pulse-worker
+spec:
+    replicas: 2
+    selector:
+        matchLabels:
+            app: pulse-worker
+    template:
+        metadata:
+            labels:
+                app: pulse-worker
+        spec:
+            containers:
+                - name: pulse-worker
+                  # Built via: eval $(minikube docker-env) && docker build -f Dockerfile.worker -t pulse-worker:latest .
+                  image: pulse-worker:latest
+                  imagePullPolicy: Never # use the image built directly into minikube's Docker daemon
+                  ports:
+                      - containerPort: 9091 # Prometheus metrics
+                  env:
+                      - name: PULSE_ENV
+                        value: "production"
+                      - name: PULSE_CONCURRENCY
+                        value: "2"
+                      - name: PULSE_REDIS_ADDR
+                        value: "host.minikube.internal:6379"
+                      - name: PULSE_CLICKHOUSE_ADDR
+                        value: "host.minikube.internal:9000"
+                      - name: PULSE_CLICKHOUSE_USER
+                        value: "pulse_ch"
+                      - name: PULSE_CLICKHOUSE_DATABASE
+                        value: "pulse"
+                      - name: PULSE_CLICKHOUSE_PASSWORD
+                        valueFrom:
+                            secretKeyRef:
+                                name: pulse-worker-secrets
+                                key: PULSE_CLICKHOUSE_PASSWORD
+                  resources:
+                      requests:
+                          cpu: "100m"
+                          memory: "64Mi"
+                      limits:
+                          cpu: "500m"
+                          memory: "256Mi"
+---
+# pulse-worker Service (ClusterIP — only the metrics port needs in-cluster access)
+apiVersion: v1
+kind: Service
+metadata:
+    name: pulse-worker-metrics
+    namespace: pulse
+spec:
+    type: ClusterIP
+    selector:
+        app: pulse-worker
+    ports:
+        - name: metrics
+          port: 9091
+          targetPort: 9091

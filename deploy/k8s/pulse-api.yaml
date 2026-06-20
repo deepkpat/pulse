@@ -1,0 +1,81 @@
+# pulse-api Deployment
+# Connects to Redis and Postgres running in Docker Compose on the host machine.
+# minikube exposes the host via the special DNS name: host.minikube.internal
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: pulse-api
+    namespace: pulse
+    labels:
+        app: pulse-api
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app: pulse-api
+    template:
+        metadata:
+            labels:
+                app: pulse-api
+        spec:
+            containers:
+                - name: pulse-api
+                  # Built via: eval $(minikube docker-env) && docker build -f Dockerfile.api -t pulse-api:latest .
+                  image: pulse-api:latest
+                  imagePullPolicy: Never # use the image built directly into minikube's Docker daemon
+                  ports:
+                      - containerPort: 8000
+                  env:
+                      - name: PULSE_ENV
+                        value: "production"
+                      - name: PULSE_REDIS_ADDR
+                        value: "host.minikube.internal:6379"
+                      - name: PULSE_PG_HOST
+                        value: "host.minikube.internal"
+                      - name: PULSE_PG_PORT
+                        value: "5432"
+                      - name: PULSE_PG_USER
+                        value: "pulse_pg"
+                      - name: PULSE_PG_DBNAME
+                        value: "pulse"
+                      - name: PULSE_PG_SSLMODE
+                        value: "disable"
+                      - name: PULSE_PG_PASSWORD
+                        valueFrom:
+                            secretKeyRef:
+                                name: pulse-api-secrets
+                                key: PULSE_PG_PASSWORD
+                  readinessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: 8000
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: 8000
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                  resources:
+                      requests:
+                          cpu: "100m"
+                          memory: "64Mi"
+                      limits:
+                          cpu: "500m"
+                          memory: "256Mi"
+---
+# pulse-api Service (NodePort so minikube can reach it from the host)
+apiVersion: v1
+kind: Service
+metadata:
+    name: pulse-api
+    namespace: pulse
+spec:
+    type: NodePort
+    selector:
+        app: pulse-api
+    ports:
+        - port: 8000
+          targetPort: 8000
+          nodePort: 30800

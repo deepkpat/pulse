@@ -4,8 +4,3 @@ volumes:
     postgres_data:
     prometheus_data:
     vault_data:
-    sonarqube_db_data:
-    sonarqube_data:
-    sonarqube_extensions:
-    sonarqube_logs:
-    jenkins_home:

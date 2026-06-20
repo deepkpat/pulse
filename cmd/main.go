@@ -71,6 +71,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := migratePostgres(db); err != nil {
+		slog.Error("failed to run postgres migrations", "error", err)
+		os.Exit(1)
+	}
+
 	pgStorage := auth.NewPostgresAuthenticator(db)
 	defer pgStorage.Close()
 
@@ -114,4 +119,27 @@ func main() {
 	}
 
 	slog.Info("application exited cleanly")
+}
+
+// migratePostgres runs idempotent DDL on startup so the application owns its
+// own schema. This removes the need for Docker init-script mounts and mirrors
+// how a managed cloud database (RDS, CloudSQL, etc.) would be handled in prod.
+func migratePostgres(db *sql.DB) error {
+	const ddl = `
+CREATE TABLE IF NOT EXISTS api_keys (
+    key         VARCHAR(64) PRIMARY KEY,
+    description VARCHAR(256) NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- seed with the development key (SHA-256 hash of 'your-secret-api-key-here')
+INSERT INTO api_keys (key, description)
+VALUES ('48202b6757f08ed91077eb1c2d4ae38f6db0c09a58bd27767e3da6e80d666632', 'development API key')
+ON CONFLICT (key) DO NOTHING;
+`
+	if _, err := db.Exec(ddl); err != nil {
+		return fmt.Errorf("postgres migration failed: %w", err)
+	}
+	slog.Info("postgres schema up to date")
+	return nil
 }

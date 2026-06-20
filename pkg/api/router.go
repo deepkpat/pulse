@@ -43,6 +43,7 @@ func NewRouter(cfg *RouterConfig) http.Handler {
 
 	// register handlers (using Go 1.22+ routing enhancements)
 	mux.HandleFunc("GET /health", HealthHandler)
+	mux.HandleFunc("GET /healthz", HealthHandler)
 	mux.Handle("GET /metrics", promhttp.Handler())
 
 	// protected routes

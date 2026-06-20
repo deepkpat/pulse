@@ -1,12 +1,10 @@
-# Pulse Monorepo Orchestration
-# Using Docker Compose Includes (v2.20+)
+# Pulse Infrastructure Orchestration (Docker Compose)
+# pulse-api and pulse-worker are managed by Kubernetes (minikube).
+# Jenkins and SonarQube have been removed.
 
 include:
     - ./deploy/compose/networks.yml
     - ./deploy/compose/volumes.yml
     - ./deploy/compose/database.yml
     - ./deploy/compose/security.yml
-    - ./deploy/compose/app.yml
     - ./deploy/compose/observability.yml
-    - ./deploy/compose/quality.yml
-    - ./deploy/compose/ci.yml

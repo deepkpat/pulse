@@ -80,6 +80,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := migrateClickHouse(context.Background(), chConn); err != nil {
+		slog.Error("failed to run clickhouse migrations", "error", err)
+		os.Exit(1)
+	}
+
 	chStorage := storage.NewClickHouseStorage(chConn)
 
 	// setup graceful shutdown context
@@ -125,4 +130,27 @@ func main() {
 	case <-time.After(30 * time.Second):
 		slog.Warn("graceful shutdown timed out; forcing exit")
 	}
+}
+
+// migrateClickHouse runs idempotent DDL on startup so the application owns
+// its own schema. This removes the need for Docker init-script mounts and
+// mirrors how a managed cloud database would behave in production.
+func migrateClickHouse(ctx context.Context, conn clickhouse.Conn) error {
+	const ddl = `
+CREATE TABLE IF NOT EXISTS pulse.pulse_events (
+    event_id   UUID,
+    event_name String,
+    user_id    String,
+    timestamp  DateTime64(3, 'UTC'),
+    request_id String,
+    properties Map(String, String)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (event_name, timestamp, user_id);
+`
+	if err := conn.Exec(ctx, ddl); err != nil {
+		return fmt.Errorf("clickhouse migration failed: %w", err)
+	}
+	slog.Info("clickhouse schema up to date")
+	return nil
 }
