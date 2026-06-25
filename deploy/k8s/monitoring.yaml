@@ -1,0 +1,394 @@
+# ---
+# # 1. RBAC permissions so Prometheus can discover pods
+# apiVersion: v1
+# kind: ServiceAccount
+# metadata:
+#     name: prometheus
+#     namespace: pulse
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#     name: prometheus-pod-reader
+#     namespace: pulse
+# rules:
+#     - apiGroups: [""]
+#       resources: ["pods", "services", "endpoints"]
+#       verbs: ["get", "list", "watch"]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#     name: prometheus-pod-reader-binding
+#     namespace: pulse
+# roleRef:
+#     apiGroup: rbac.authorization.k8s.io
+#     kind: Role
+#     name: prometheus-pod-reader
+# subjects:
+#     - kind: ServiceAccount
+#       name: prometheus
+#       namespace: pulse
+# ---
+# # 2. Prometheus Config and Alerts
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#     name: prometheus-config
+#     namespace: pulse
+# data:
+#     prometheus.yml: |
+#         global:
+#           scrape_interval: 15s
+
+#         rule_files:
+#           - /etc/prometheus/alerts.yml
+
+#         scrape_configs:
+#           # Scrape pulse-api pods
+#           - job_name: 'pulse-api-pods'
+#             kubernetes_sd_configs:
+#               - role: pod
+#                 namespaces:
+#                   names: [pulse]
+#             relabel_configs:
+#               - source_labels: [__meta_kubernetes_pod_label_app]
+#                 action: keep
+#                 regex: pulse-api
+#               - source_labels: [__meta_kubernetes_pod_name]
+#                 target_label: pod
+#               - source_labels: [__meta_kubernetes_pod_label_app]
+#                 target_label: app
+#               # Override port to 8000
+#               - source_labels: [__address__]
+#                 action: replace
+#                 regex: ([^:]+)(?::\d+)?
+#                 replacement: $1:8000
+#                 target_label: __address__
+
+#           # Scrape pulse-worker pods
+#           - job_name: 'pulse-worker-pods'
+#             kubernetes_sd_configs:
+#               - role: pod
+#                 namespaces:
+#                   names: [pulse]
+#             relabel_configs:
+#               - source_labels: [__meta_kubernetes_pod_label_app]
+#                 action: keep
+#                 regex: pulse-worker
+#               - source_labels: [__meta_kubernetes_pod_name]
+#                 target_label: pod
+#               - source_labels: [__meta_kubernetes_pod_label_app]
+#                 target_label: app
+#               # Override port to 9091
+#               - source_labels: [__address__]
+#                 action: replace
+#                 regex: ([^:]+)(?::\d+)?
+#                 replacement: $1:9091
+#                 target_label: __address__
+
+#     alerts.yml: |
+#         groups:
+#           - name: pulse_reliability
+#             interval: 30s
+#             rules:
+#               # ===== Connection Health Alerts (Majority Failure) =====
+#               # Using avg() on a 1/0 metric gives the percentage of healthy pods.
+#               # If < 0.5, majority of pods are failing.
+
+#               - alert: ClickHouseMajorityConnectionDown
+#                 expr: avg by (app) (pulse_clickhouse_connection_health) < 0.5
+#                 for: 30s
+#                 annotations:
+#                   summary: "ClickHouse connection down for majority of {{ $labels.app }}"
+#                   description: "More than 50% of {{ $labels.app }} pods lost connection to ClickHouse."
+
+#               - alert: PostgresMajorityConnectionDown
+#                 expr: avg by (app) (pulse_postgres_connection_health) < 0.5
+#                 for: 30s
+#                 annotations:
+#                   summary: "PostgreSQL connection down for majority of {{ $labels.app }}"
+#                   description: "More than 50% of {{ $labels.app }} pods lost connection to PostgreSQL."
+
+#               - alert: RedisMajorityConnectionDown
+#                 expr: avg by (app) (pulse_redis_connection_health) < 0.5
+#                 for: 10s
+#                 annotations:
+#                   summary: "Redis connection down for majority of {{ $labels.app }}"
+#                   description: "More than 50% of {{ $labels.app }} pods lost connection to Redis."
+
+#               # ===== Latency Alerts (Aggregated Histograms) =====
+#               # To get accurate percentiles across multiple pods, we sum the buckets first.
+
+#               - alert: ClickHouseHighLatency
+#                 expr: histogram_quantile(0.95, sum by (le, app) (rate(pulse_clickhouse_ping_duration_seconds_bucket[5m]))) > 0.5
+#                 for: 2m
+#                 annotations:
+#                   summary: "ClickHouse p95 ping latency high across {{ $labels.app }}"
+
+#               - alert: PostgresHighLatency
+#                 expr: histogram_quantile(0.95, sum by (le, app) (rate(pulse_postgres_ping_duration_seconds_bucket[5m]))) > 0.1
+#                 for: 2m
+#                 annotations:
+#                   summary: "PostgreSQL p95 ping latency high across {{ $labels.app }}"
+
+#               # ===== Error Rate Alerts (Cluster Totals) =====
+
+#               - alert: StorageTransientErrorsIncreasing
+#                 expr: sum by (app) (rate(pulse_storage_inserts_total{result="error_transient"}[5m])) > 0.1
+#                 annotations:
+#                   summary: "High transient errors across {{ $labels.app }}"
+
+#               - alert: StoragePermanentErrorsDetected
+#                 expr: sum by (app) (rate(pulse_storage_inserts_total{result="error_permanent"}[5m])) > 0.01
+#                 annotations:
+#                   summary: "Permanent storage errors detected across {{ $labels.app }}"
+
+#               - alert: DLQBacklogIncreasing
+#                 expr: sum by (app) (rate(pulse_dlq_writes_total[5m])) > 1
+#                 for: 1m
+#                 annotations:
+#                   summary: "DLQ backlog increasing across {{ $labels.app }}"
+# ---
+# # 3. Prometheus Deployment & Service
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#     name: pulse-prometheus
+#     namespace: pulse
+# spec:
+#     replicas: 1
+#     selector:
+#         matchLabels:
+#             app: pulse-prometheus
+#     template:
+#         metadata:
+#             labels:
+#                 app: pulse-prometheus
+#         spec:
+#             serviceAccountName: prometheus
+#             containers:
+#                 - name: prometheus
+#                   image: prom/prometheus:v3.0.0
+#                   ports:
+#                       - containerPort: 9090
+#                   volumeMounts:
+#                       - name: config-volume
+#                         mountPath: /etc/prometheus
+#             volumes:
+#                 - name: config-volume
+#                   configMap:
+#                       name: prometheus-config
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#     name: pulse-prometheus
+#     namespace: pulse
+# spec:
+#     type: NodePort
+#     selector:
+#         app: pulse-prometheus
+#     ports:
+#         - port: 9090
+#           targetPort: 9090
+#           nodePort: 30999
+
+---
+# 1. RBAC permissions so Prometheus can discover pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: prometheus
+    namespace: pulse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: prometheus-pod-reader
+    namespace: pulse
+rules:
+    - apiGroups: [""]
+      resources: ["pods", "services", "endpoints"]
+      verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: prometheus-pod-reader-binding
+    namespace: pulse
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: prometheus-pod-reader
+subjects:
+    - kind: ServiceAccount
+      name: prometheus
+      namespace: pulse
+---
+# 2. Prometheus Config and Alerts
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: prometheus-config
+    namespace: pulse
+data:
+    prometheus.yml: |
+        global:
+          scrape_interval: 15s
+
+        rule_files:
+          - /etc/prometheus/alerts.yml
+
+        scrape_configs:
+          - job_name: 'pulse-api-pods'
+            kubernetes_sd_configs:
+              - role: pod
+                namespaces:
+                  names: [pulse]
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                action: keep
+                regex: pulse-api
+              - source_labels: [__meta_kubernetes_pod_name]
+                target_label: pod
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                target_label: app
+              - source_labels: [__address__]
+                action: replace
+                regex: ([^:]+)(?::\d+)?
+                replacement: $1:8000
+                target_label: __address__
+
+          - job_name: 'pulse-worker-pods'
+            kubernetes_sd_configs:
+              - role: pod
+                namespaces:
+                  names: [pulse]
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                action: keep
+                regex: pulse-worker
+              - source_labels: [__meta_kubernetes_pod_name]
+                target_label: pod
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                target_label: app
+              - source_labels: [__address__]
+                action: replace
+                regex: ([^:]+)(?::\d+)?
+                replacement: $1:9091
+                target_label: __address__
+
+    alerts.yml: |
+        groups:
+          - name: pulse_reliability
+            interval: 30s
+            rules:
+              # ===== Connection Health Alerts (Majority Failure) =====
+              - alert: ClickHouseMajorityConnectionDown
+                expr: avg by (app) (pulse_clickhouse_connection_health) < 0.5
+                for: 30s
+                annotations:
+                  summary: "ClickHouse connection down for majority of {{ $labels.app }}"
+                  description: "More than 50% of {{ $labels.app }} pods lost connection to ClickHouse."
+
+              - alert: PostgresMajorityConnectionDown
+                expr: avg by (app) (pulse_postgres_connection_health) < 0.5
+                for: 30s
+                annotations:
+                  summary: "PostgreSQL connection down for majority of {{ $labels.app }}"
+                  description: "More than 50% of {{ $labels.app }} pods lost connection to PostgreSQL."
+
+              - alert: RedisMajorityConnectionDown
+                expr: avg by (app) (pulse_redis_connection_health) < 0.5
+                for: 10s
+                annotations:
+                  summary: "Redis connection down for majority of {{ $labels.app }}"
+                  description: "More than 50% of {{ $labels.app }} pods lost connection to Redis."
+
+              # ===== Latency Alerts =====
+              - alert: ClickHouseHighLatency
+                expr: histogram_quantile(0.95, sum by (le, app) (rate(pulse_clickhouse_ping_duration_seconds_bucket[5m]))) > 0.5
+                for: 2m
+                annotations:
+                  summary: "ClickHouse p95 ping latency high across {{ $labels.app }}"
+
+              - alert: PostgresHighLatency
+                expr: histogram_quantile(0.95, sum by (le, app) (rate(pulse_postgres_ping_duration_seconds_bucket[5m]))) > 0.1
+                for: 2m
+                annotations:
+                  summary: "PostgreSQL p95 ping latency high across {{ $labels.app }}"
+
+              # ===== Error Rate Alerts =====
+              - alert: StorageTransientErrorsIncreasing
+                expr: sum by (app) (rate(pulse_storage_inserts_total{result="error_transient"}[5m])) > 0.1
+                annotations:
+                  summary: "High transient errors across {{ $labels.app }}"
+
+              - alert: StoragePermanentErrorsDetected
+                expr: sum by (app) (rate(pulse_storage_inserts_total{result="error_permanent"}[5m])) > 0.01
+                annotations:
+                  summary: "Permanent storage errors detected across {{ $labels.app }}"
+
+              - alert: DLQBacklogIncreasing
+                expr: sum by (app) (rate(pulse_dlq_writes_total[5m])) > 1
+                for: 1m
+                annotations:
+                  summary: "DLQ backlog increasing across {{ $labels.app }}"
+---
+# 3. Prometheus StatefulSet (Ensures Persistent Identity & Storage)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    name: pulse-prometheus
+    namespace: pulse
+spec:
+    serviceName: "pulse-prometheus" # Links to network identity
+    replicas: 1
+    selector:
+        matchLabels:
+            app: pulse-prometheus
+    template:
+        metadata:
+            labels:
+                app: pulse-prometheus
+        spec:
+            serviceAccountName: prometheus
+            containers:
+                - name: prometheus
+                  image: prom/prometheus:v3.0.0
+                  ports:
+                      - containerPort: 9090
+                  volumeMounts:
+                      - name: config-volume
+                        mountPath: /etc/prometheus
+                      - name: prometheus-storage
+                        mountPath: /prometheus
+            volumes:
+                - name: config-volume
+                  configMap:
+                      name: prometheus-config
+    # This template automatically requests and attaches disk space per pod
+    volumeClaimTemplates:
+        - metadata:
+              name: prometheus-storage
+          spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                  requests:
+                      storage: 5Gi
+---
+# 4. Service layer to expose the UI
+apiVersion: v1
+kind: Service
+metadata:
+    name: pulse-prometheus
+    namespace: pulse
+spec:
+    type: NodePort
+    selector:
+        app: pulse-prometheus
+    ports:
+        - port: 9090
+          targetPort: 9090
+          nodePort: 30999

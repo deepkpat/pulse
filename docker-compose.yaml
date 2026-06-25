@@ -7,4 +7,4 @@ include:
     - ./deploy/compose/volumes.yml
     - ./deploy/compose/database.yml
     - ./deploy/compose/security.yml
-    - ./deploy/compose/observability.yml
+    # - ./deploy/compose/observability.yml
