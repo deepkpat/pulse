@@ -1,6 +1,0 @@
-volumes:
-    redis_data:
-    clickhouse_data:
-    postgres_data:
-    prometheus_data:
-    vault_data:

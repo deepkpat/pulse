@@ -1,0 +1,15 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: isolate-data-tier
+    namespace: pulse
+spec:
+    podSelector:
+        matchExpressions:
+            - key: app
+              operator: In
+              values: ["redis", "clickhouse", "postgres"]
+    policyTypes:
+        - Ingress
+
+# kubectl delete networkpolicy isolate-data-tier -n pulse

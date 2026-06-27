@@ -53,12 +53,21 @@ func main() {
 	consumerName := fmt.Sprintf("%s-%x", hostname, randomBytes)
 
 	// infrastructure setup
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         cfg.Redis.Addr,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolTimeout:  4 * time.Second,
+	})
 	eventQueue := queue.NewRedisQueue(rdb, cfg.Redis.StreamName, cfg.Redis.GroupName, consumerName)
 	dedupCache := cache.NewDeduplicator(rdb, cfg.Redis.DedupTTL, "dedup:api")
 
 	// initialize postgres connection pool
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+	// connect_timeout: 3s
+	// statement_timeout: 10s (10000ms)
+	// tcp_keepalives: enabled with 30s idle, 5s interval, 3 count
+	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=3 statement_timeout=10000 tcp_keepalives=1 tcp_keepalive_idle=30 tcp_keepalive_interval=5 tcp_keepalive_count=3",
 		cfg.Postgres.Host, cfg.Postgres.Port, cfg.Postgres.User, cfg.Postgres.Password, cfg.Postgres.DBName, cfg.Postgres.SSLMode)
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -80,7 +89,7 @@ func main() {
 	}
 
 	// start background health monitor (postgres + redis; no clickhouse in API binary)
-	healthMonitor := health.NewHealthMonitor(nil, db, rdb, 30*time.Second)
+	healthMonitor := health.NewHealthMonitor(nil, db, rdb, 15*time.Second)
 	go healthMonitor.Start(context.Background())
 	defer healthMonitor.Stop()
 

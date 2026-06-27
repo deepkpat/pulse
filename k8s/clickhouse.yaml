@@ -1,0 +1,114 @@
+---
+# clickhouse stateful-set
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    name: clickhouse-ss
+    namespace: pulse
+    labels:
+        app: clickhouse
+spec:
+    serviceName: clickhouse-hls
+    replicas: 1
+    selector:
+        matchLabels:
+            app: clickhouse
+    template:
+        metadata:
+            labels:
+                app: clickhouse
+        spec:
+            terminationGracePeriodSeconds: 60
+            containers:
+                - name: clickhouse
+                  image: clickhouse/clickhouse-server:25.8-alpine
+                  ports:
+                      - containerPort: 8123
+                        name: http
+                      - containerPort: 9000
+                        name: native
+                  env:
+                      - name: CLICKHOUSE_USER
+                        value: "pulse_ch"
+                      - name: CLICKHOUSE_DB
+                        value: "pulse"
+                      - name: CLICKHOUSE_PASSWORD
+                        valueFrom:
+                            secretKeyRef:
+                                name: ch-secrets
+                                key: CLICKHOUSE_PASSWORD
+                  resources:
+                      requests:
+                          cpu: "500m"
+                          memory: "1Gi"
+                      limits:
+                          cpu: "2000m"
+                          memory: "4Gi"
+                  # Using native /ping endpoint to avoid auth loops
+                  readinessProbe:
+                      httpGet:
+                          path: /ping
+                          port: 8123
+                      initialDelaySeconds: 16
+                      periodSeconds: 8
+                      timeoutSeconds: 4
+                      failureThreshold: 4
+                  livenessProbe:
+                      httpGet:
+                          path: /ping
+                          port: 8123
+                      initialDelaySeconds: 16
+                      periodSeconds: 8
+                      timeoutSeconds: 4
+                      failureThreshold: 4
+                  volumeMounts:
+                      - name: clickhouse-data
+                        mountPath: /var/lib/clickhouse
+    volumeClaimTemplates:
+        - metadata:
+              name: clickhouse-data
+          spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                  requests:
+                      storage: 20Gi
+
+---
+# clickhouse headless service
+apiVersion: v1
+kind: Service
+metadata:
+    name: clickhouse-hls
+    namespace: pulse
+    labels:
+        app: clickhouse
+spec:
+    clusterIP: None
+    ports:
+        - port: 8123
+          name: http
+        - port: 9000
+          name: native
+    selector:
+        app: clickhouse
+
+---
+# clickhouse service
+apiVersion: v1
+kind: Service
+metadata:
+    name: clickhouse-svc
+    namespace: pulse
+    labels:
+        app: clickhouse
+spec:
+    type: ClusterIP
+    ports:
+        - port: 8123
+          targetPort: 8123
+          name: http
+        - port: 9000
+          targetPort: 9000
+          name: native
+    selector:
+        app: clickhouse

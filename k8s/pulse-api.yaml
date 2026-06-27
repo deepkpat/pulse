@@ -1,6 +1,5 @@
-# pulse-api Deployment
-# Connects to Redis and Postgres running in Docker Compose on the host machine.
-# minikube exposes the host via the special DNS name: host.minikube.internal
+---
+# pulse-api deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,18 +19,18 @@ spec:
         spec:
             containers:
                 - name: pulse-api
-                  # Built via: eval $(minikube docker-env) && docker build -f Dockerfile.api -t pulse-api:latest .
                   image: pulse-api:latest
-                  imagePullPolicy: Never # use the image built directly into minikube's Docker daemon
+                  imagePullPolicy: Never
                   ports:
                       - containerPort: 8000
+                        name: http
                   env:
                       - name: PULSE_ENV
                         value: "production"
                       - name: PULSE_REDIS_ADDR
-                        value: "host.minikube.internal:6379"
+                        value: "redis-svc:6379"
                       - name: PULSE_PG_HOST
-                        value: "host.minikube.internal"
+                        value: "postgres-svc"
                       - name: PULSE_PG_PORT
                         value: "5432"
                       - name: PULSE_PG_USER
@@ -43,8 +42,8 @@ spec:
                       - name: PULSE_PG_PASSWORD
                         valueFrom:
                             secretKeyRef:
-                                name: pulse-api-secrets
-                                key: PULSE_PG_PASSWORD
+                                name: pg-secrets
+                                key: POSTGRES_PASSWORD
                   readinessProbe:
                       httpGet:
                           path: /healthz
@@ -64,13 +63,16 @@ spec:
                       limits:
                           cpu: "500m"
                           memory: "256Mi"
+
 ---
-# pulse-api Service (NodePort so minikube can reach it from the host)
+# pulse-api service
 apiVersion: v1
 kind: Service
 metadata:
     name: pulse-api
     namespace: pulse
+    labels:
+        app: pulse-api
 spec:
     type: NodePort
     selector:
@@ -79,3 +81,34 @@ spec:
         - port: 8000
           targetPort: 8000
           nodePort: 30800
+          name: http
+
+---
+# pulse-api hpa
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: pulse-api-hpa
+    namespace: pulse
+    labels:
+        app: pulse-api
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: pulse-api
+    minReplicas: 1
+    maxReplicas: 10
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target:
+                  type: Utilization
+                  averageUtilization: 70
+        - type: Resource
+          resource:
+              name: memory
+              target:
+                  type: Utilization
+                  averageUtilization: 80

@@ -56,7 +56,13 @@ func main() {
 	hostname, _ := os.Hostname()
 
 	// infrastructure setup (shared across all goroutines — both are thread-safe)
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         cfg.Redis.Addr,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolTimeout:  4 * time.Second,
+	})
 
 	// ensure the consumer group exists (ignoring the error if it already does)
 	_ = rdb.XGroupCreateMkStream(context.Background(), cfg.Redis.StreamName, cfg.Redis.GroupName, "0").Err()
@@ -71,7 +77,12 @@ func main() {
 			Username: cfg.ClickHouse.User,
 			Password: cfg.ClickHouse.Password,
 		},
-		DialTimeout: 5 * time.Second,
+		DialTimeout:     2 * time.Second,
+		ReadTimeout:     5 * time.Second,
+		ConnMaxLifetime: 10 * time.Minute,
+		Settings: clickhouse.Settings{
+			"max_execution_time": 10, // seconds
+		},
 	})
 	if err != nil {
 		slog.Error("failed to open clickhouse connection pool", "error", err)
@@ -91,7 +102,7 @@ func main() {
 	chStorage := storage.NewClickHouseStorage(chConn)
 
 	// start background health monitor (clickhouse + redis; no postgres in worker binary)
-	healthMonitor := health.NewHealthMonitor(chConn, nil, rdb, 30*time.Second)
+	healthMonitor := health.NewHealthMonitor(chConn, nil, rdb, 15*time.Second)
 	go healthMonitor.Start(context.Background())
 	defer healthMonitor.Stop()
 

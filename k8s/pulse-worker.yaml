@@ -1,6 +1,5 @@
-# pulse-worker Deployment
-# Connects to Redis and ClickHouse running in Docker Compose on the host machine.
-# minikube exposes the host via the special DNS name: host.minikube.internal
+---
+# pulse-worker deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,20 +19,20 @@ spec:
         spec:
             containers:
                 - name: pulse-worker
-                  # Built via: eval $(minikube docker-env) && docker build -f Dockerfile.worker -t pulse-worker:latest .
                   image: pulse-worker:latest
-                  imagePullPolicy: Never # use the image built directly into minikube's Docker daemon
+                  imagePullPolicy: Never
                   ports:
-                      - containerPort: 9091 # Prometheus metrics
+                      - containerPort: 9091
+                        name: metrics
                   env:
                       - name: PULSE_ENV
                         value: "production"
                       - name: PULSE_CONCURRENCY
                         value: "2"
                       - name: PULSE_REDIS_ADDR
-                        value: "host.minikube.internal:6379"
+                        value: "redis-svc:6379"
                       - name: PULSE_CLICKHOUSE_ADDR
-                        value: "host.minikube.internal:9000"
+                        value: "clickhouse-svc:9000"
                       - name: PULSE_CLICKHOUSE_USER
                         value: "pulse_ch"
                       - name: PULSE_CLICKHOUSE_DATABASE
@@ -41,8 +40,8 @@ spec:
                       - name: PULSE_CLICKHOUSE_PASSWORD
                         valueFrom:
                             secretKeyRef:
-                                name: pulse-worker-secrets
-                                key: PULSE_CLICKHOUSE_PASSWORD
+                                name: ch-secrets
+                                key: CLICKHOUSE_PASSWORD
                   resources:
                       requests:
                           cpu: "100m"
@@ -50,13 +49,16 @@ spec:
                       limits:
                           cpu: "500m"
                           memory: "256Mi"
+
 ---
-# pulse-worker Service (NodePort so metrics are reachable from outside the cluster)
+# pulse-worker metrics service
 apiVersion: v1
 kind: Service
 metadata:
     name: pulse-worker-metrics
     namespace: pulse
+    labels:
+        app: pulse-worker
 spec:
     type: NodePort
     selector:
@@ -66,3 +68,33 @@ spec:
           port: 9091
           targetPort: 9091
           nodePort: 30901
+
+---
+# pulse-worker hpa
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: pulse-worker-hpa
+    namespace: pulse
+    labels:
+        app: pulse-worker
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: pulse-worker
+    minReplicas: 2
+    maxReplicas: 20
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target:
+                  type: Utilization
+                  averageUtilization: 70
+        - type: Resource
+          resource:
+              name: memory
+              target:
+                  type: Utilization
+                  averageUtilization: 80

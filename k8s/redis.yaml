@@ -1,0 +1,95 @@
+---
+# redis stateful-set
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    name: redis-ss
+    namespace: pulse
+    labels:
+        app: redis
+spec:
+    serviceName: redis-hls
+    replicas: 1
+    selector:
+        matchLabels:
+            app: redis
+    template:
+        metadata:
+            labels:
+                app: redis
+        spec:
+            terminationGracePeriodSeconds: 32
+            containers:
+                - name: redis
+                  image: redis:8.0-alpine
+                  command: ["redis-server", "--appendonly", "yes"]
+                  ports:
+                      - containerPort: 6379
+                        name: redis
+                  resources:
+                      requests:
+                          cpu: "100m"
+                          memory: "256Mi"
+                      limits:
+                          cpu: "500m"
+                          memory: "512Mi"
+                  readinessProbe:
+                      exec:
+                          command: ["redis-cli", "ping"]
+                      initialDelaySeconds: 8
+                      periodSeconds: 8
+                      timeoutSeconds: 4
+                      failureThreshold: 4
+                  livenessProbe:
+                      exec:
+                          command: ["redis-cli", "ping"]
+                      initialDelaySeconds: 8
+                      periodSeconds: 8
+                      timeoutSeconds: 4
+                      failureThreshold: 4
+                  volumeMounts:
+                      - name: redis-data
+                        mountPath: /data
+    volumeClaimTemplates:
+        - metadata:
+              name: redis-data
+          spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                  requests:
+                      storage: 10Gi
+
+---
+# redis headless service
+apiVersion: v1
+kind: Service
+metadata:
+    name: redis-hls
+    namespace: pulse
+    labels:
+        app: redis
+spec:
+    clusterIP: None
+    ports:
+        - port: 6379
+          name: redis
+    selector:
+        app: redis
+
+---
+# redis service
+apiVersion: v1
+kind: Service
+metadata:
+    name: redis-svc
+    namespace: pulse
+    labels:
+        app: redis
+spec:
+    type: ClusterIP
+    ports:
+        - port: 6379
+          targetPort: 6379
+          name: redis
+    selector:
+        app: redis
